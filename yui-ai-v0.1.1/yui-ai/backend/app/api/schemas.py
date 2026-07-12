@@ -2,11 +2,42 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, EmailStr, Field
+
+# --- Autenticação -----------------------------------------------------------
+
+
+class UserRegisterRequest(BaseModel):
+    email: EmailStr
+    # máximo 72: limite do bcrypt (bytes além disso seriam ignorados no hash)
+    password: str = Field(min_length=8, max_length=72)
+    name: str | None = Field(default=None, max_length=120)
+
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=1, max_length=72)
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+
+
+class UserResponse(BaseModel):
+    id: uuid.UUID
+    email: EmailStr
+    name: str | None
+    plan: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+# --- Chat --------------------------------------------------------------------
 
 
 class ChatRequest(BaseModel):
-    user_id: str = Field(min_length=1, max_length=128)
     message: str = Field(min_length=1, max_length=8000)
     conversation_id: uuid.UUID | None = None
 
@@ -18,8 +49,10 @@ class ChatResponse(BaseModel):
     memories_used: int
 
 
+# --- Memórias ----------------------------------------------------------------
+
+
 class MemoryCreateRequest(BaseModel):
-    user_id: str = Field(min_length=1, max_length=128)
     category: str = Field(min_length=1, max_length=64)
     content: str = Field(min_length=1, max_length=4000)
     relevance: float = Field(default=0.5, ge=0.0, le=1.0)
@@ -27,7 +60,6 @@ class MemoryCreateRequest(BaseModel):
 
 class MemoryResponse(BaseModel):
     id: uuid.UUID
-    user_id: str
     category: str
     content: str
     relevance: float

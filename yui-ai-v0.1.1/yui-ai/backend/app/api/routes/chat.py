@@ -1,21 +1,22 @@
 """Rotas de conversa com a Yui.
 
-Erros de LLM (LLMError) são convertidos em HTTP 502 por um exception
-handler global registrado em app/main.py — inclusive quando ocorrem na
-resolução de dependências (ex.: API key ausente), fora do corpo da rota.
+O usuário vem exclusivamente do token (CurrentUser). Erros de domínio
+(LLM, rate limit, conversa inexistente) são convertidos em HTTP pelos
+handlers globais registrados em app/main.py.
 """
 from fastapi import APIRouter
 
-from app.api.deps import Yui
+from app.api.deps import CurrentUser, Yui
 from app.api.schemas import ChatRequest, ChatResponse
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 
 @router.post("")
-async def chat(payload: ChatRequest, yui: Yui) -> ChatResponse:
+async def chat(payload: ChatRequest, user: CurrentUser, yui: Yui) -> ChatResponse:
     reply = await yui.process_message(
-        user_id=payload.user_id,
+        user_id=user.id,
+        plan=user.plan,
         text=payload.message,
         conversation_id=payload.conversation_id,
     )

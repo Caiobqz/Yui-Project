@@ -9,7 +9,13 @@ class ClaudeProvider(LLMProvider):
     def __init__(self, settings: Settings) -> None:
         if not settings.anthropic_api_key:
             raise LLMError("ANTHROPIC_API_KEY não configurada.")
-        self._client = AsyncAnthropic(api_key=settings.anthropic_api_key)
+        # Timeout explícito: sem ele o SDK espera até 10 minutos, segurando
+        # a requisição HTTP da Yui inteira.
+        self._client = AsyncAnthropic(
+            api_key=settings.anthropic_api_key,
+            timeout=settings.llm_timeout_seconds,
+            max_retries=settings.llm_max_retries,
+        )
         self._model = settings.anthropic_model
         self._max_tokens = settings.llm_max_tokens
         self._temperature = settings.llm_temperature

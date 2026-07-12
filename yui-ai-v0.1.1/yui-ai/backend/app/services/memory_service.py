@@ -1,13 +1,13 @@
 """Memória de longo prazo: informações autorizadas pelo usuário (PostgreSQL).
 
-Na v0.1 a recuperação usa sobreposição lexical simples ponderada pela
+Na v0.1.x a recuperação usa sobreposição lexical simples ponderada pela
 relevância da memória. A assinatura de `retrieve_relevant` foi desenhada
 para que a v0.2 troque a implementação por embeddings + busca vetorial
 (pgvector) sem alterar quem consome o serviço.
 
-Nota de escala: a v0.1 carrega todas as memórias do usuário para pontuar
-em memória. Aceitável para volumes pessoais; a busca vetorial da v0.2
-move o ranking para o banco.
+Nota de escala: carrega todas as memórias do usuário para pontuar em
+memória. Aceitável para volumes pessoais; a busca vetorial da v0.2 move o
+ranking para o banco.
 """
 import re
 import unicodedata
@@ -47,7 +47,11 @@ class MemoryService:
         self._retrieval_limit = get_settings().memory_retrieval_limit
 
     async def create(
-        self, user_id: str, category: str, content: str, relevance: float = 0.5
+        self,
+        user_id: uuid.UUID,
+        category: str,
+        content: str,
+        relevance: float = 0.5,
     ) -> MemoryEntry:
         entry = MemoryEntry(
             user_id=user_id,
@@ -59,7 +63,7 @@ class MemoryService:
         await self._session.flush()
         return entry
 
-    async def list_by_user(self, user_id: str) -> list[MemoryEntry]:
+    async def list_by_user(self, user_id: uuid.UUID) -> list[MemoryEntry]:
         result = await self._session.execute(
             select(MemoryEntry)
             .where(MemoryEntry.user_id == user_id)
@@ -67,7 +71,7 @@ class MemoryService:
         )
         return list(result.scalars().all())
 
-    async def delete(self, user_id: str, memory_id: uuid.UUID) -> bool:
+    async def delete(self, user_id: uuid.UUID, memory_id: uuid.UUID) -> bool:
         result = await self._session.execute(
             select(MemoryEntry).where(
                 MemoryEntry.id == memory_id, MemoryEntry.user_id == user_id
@@ -79,7 +83,9 @@ class MemoryService:
         await self._session.delete(entry)
         return True
 
-    async def retrieve_relevant(self, user_id: str, query: str) -> list[MemoryEntry]:
+    async def retrieve_relevant(
+        self, user_id: uuid.UUID, query: str
+    ) -> list[MemoryEntry]:
         """Retorna as memórias mais relacionadas à mensagem do usuário."""
         memories = await self.list_by_user(user_id)
         if not memories:

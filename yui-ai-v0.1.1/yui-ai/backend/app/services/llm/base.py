@@ -4,6 +4,7 @@ Nenhum outro módulo da Yui deve importar SDKs de provedores diretamente.
 Isso mantém o sistema independente de fornecedor (Claude, OpenAI, locais).
 """
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Literal
 
@@ -37,3 +38,15 @@ class LLMProvider(ABC):
     ) -> LLMResponse:
         """Gera uma resposta a partir do system prompt e do histórico."""
         raise NotImplementedError
+
+    def generate_stream(
+        self,
+        system_prompt: str,
+        messages: list[ChatMessage],
+    ) -> AsyncIterator[str]:
+        """Streaming token a token — ponto de extensão planejado para a v0.2.
+
+        Providers que suportarem streaming sobrescrevem este método; a API
+        exporá SSE sobre ele sem mudança no contrato de `generate`.
+        """
+        raise NotImplementedError("Streaming será implementado na v0.2.")

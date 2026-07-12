@@ -1,24 +1,71 @@
 """Dependências injetáveis da API."""
 from typing import Annotated
 
-from fastapi import Depends
+import jwt
+from fastapi import Depends, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.yui_core import YuiCore
+from app.core.security import decode_access_token
 from app.database.redis_client import get_redis
-from app.database.session import get_db_session
+from app.database.session import async_session_factory, get_db_session
 from app.memory.short_term import ShortTermMemory
+from app.models.user import User
 from app.services.llm.factory import get_llm_provider
+from app.services.rate_limiter import RateLimiter
 
 DbSession = Annotated[AsyncSession, Depends(get_db_session)]
 
+# auto_error=False para controlarmos a mensagem e o status do 401.
+_bearer_scheme = HTTPBearer(auto_error=False)
 
-async def get_yui_core(session: DbSession) -> YuiCore:
+_UNAUTHORIZED = HTTPException(
+    status_code=status.HTTP_401_UNAUTHORIZED,
+    detail="Não autenticado.",
+    headers={"WWW-Authenticate": "Bearer"},
+)
+
+
+async def get_current_user(
+    session: DbSession,
+    credentials: Annotated[
+        HTTPAuthorizationCredentials | None, Depends(_bearer_scheme)
+    ] = None,
+) -> User:
+    """Identifica o usuário exclusivamente pelo token JWT.
+
+    O cliente nunca informa user_id: toda autorização deriva daqui.
+    """
+    if credentials is None:
+        raise _UNAUTHORIZED
+    try:
+        user_id = decode_access_token(credentials.credentials)
+    except jwt.InvalidTokenError:
+        raise _UNAUTHORIZED from None
+
+    user = await session.get(User, user_id)
+    if user is None or not user.is_active:
+        raise _UNAUTHORIZED
+    return user
+
+
+CurrentUser = Annotated[User, Depends(get_current_user)]
+
+
+async def get_yui_core() -> YuiCore:
+    """Monta o orquestrador do chat.
+
+    Recebe a *factory* de sessões (não uma sessão da requisição): o YuiCore
+    abre conexões curtas antes e depois da chamada ao LLM, sem segurar
+    conexão do pool durante a geração.
+    """
     redis = await get_redis()
     return YuiCore(
-        session=session,
+        session_factory=async_session_factory,
         short_term=ShortTermMemory(redis),
         llm=get_llm_provider(),
+        rate_limiter=RateLimiter(redis),
     )
 
 
