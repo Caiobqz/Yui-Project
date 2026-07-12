@@ -1,4 +1,4 @@
-"""Cliente Redis compartilhado (memória de curto prazo).
+"""Cliente Redis compartilhado (cache de histórico e rate limiting).
 
 A criação é protegida por lock para evitar que requisições concorrentes
 durante o cold start criem múltiplos clientes.
@@ -24,6 +24,7 @@ async def get_redis() -> Redis:
 
 async def close_redis() -> None:
     global _redis  # noqa: PLW0603
-    if _redis is not None:
-        await _redis.aclose()
-        _redis = None
+    async with _lock:
+        if _redis is not None:
+            await _redis.aclose()
+            _redis = None

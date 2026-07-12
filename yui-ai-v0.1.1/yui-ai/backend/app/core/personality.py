@@ -39,8 +39,12 @@ class PersonalityLoadError(RuntimeError):
 
 @lru_cache
 def get_personality() -> Personality:
-    """Carrega a personalidade do arquivo configurado (cacheada por processo)."""
-    path = Path(get_settings().personality_path)
+    """Carrega a personalidade do arquivo configurado (cacheada por processo).
+
+    O caminho é resolvido relativo à raiz do backend (ver Settings), então o
+    boot funciona independentemente do diretório de onde o processo partiu.
+    """
+    path: Path = get_settings().personality_file
     if not path.exists():
         raise PersonalityLoadError(f"Arquivo de personalidade não encontrado: {path}")
     with path.open("r", encoding="utf-8") as f:

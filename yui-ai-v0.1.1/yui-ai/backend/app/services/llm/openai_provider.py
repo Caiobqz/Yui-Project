@@ -10,7 +10,11 @@ class OpenAIProvider(LLMProvider):
     def __init__(self, settings: Settings) -> None:
         if not settings.openai_api_key:
             raise LLMError("OPENAI_API_KEY não configurada.")
-        self._client = AsyncOpenAI(api_key=settings.openai_api_key)
+        self._client = AsyncOpenAI(
+            api_key=settings.openai_api_key,
+            timeout=settings.llm_timeout_seconds,
+            max_retries=settings.llm_max_retries,
+        )
         self._model = settings.openai_model
         self._max_tokens = settings.llm_max_tokens
         self._temperature = settings.llm_temperature
@@ -28,6 +32,8 @@ class OpenAIProvider(LLMProvider):
                 chat_messages.append({"role": "assistant", "content": m.content})
 
         try:
+            # Nota: modelos de raciocínio recentes da OpenAI usam
+            # `max_completion_tokens`; ao migrar de modelo, revisar aqui.
             response = await self._client.chat.completions.create(
                 model=self._model,
                 max_tokens=self._max_tokens,

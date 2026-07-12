@@ -1,27 +1,53 @@
 services:
   postgres:
-    image: postgres:16-alpine
+    # pgvector já incluso: prepara o banco para embeddings/RAG (v0.2)
+    # sem troca de imagem no futuro.
+    image: pgvector/pgvector:pg16
     environment:
-      POSTGRES_USER: yui
-      POSTGRES_PASSWORD: yui_password
-      POSTGRES_DB: yui
+      POSTGRES_USER: ${POSTGRES_USER:-yui}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-yui_password}
+      POSTGRES_DB: ${POSTGRES_DB:-yui}
     ports:
-      - "5432:5432"
+      # Bind em localhost: não expõe o banco na rede local.
+      - "127.0.0.1:5432:5432"
     volumes:
       - yui_pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U yui"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-yui}"]
       interval: 5s
       retries: 10
 
   redis:
     image: redis:7-alpine
+    # Persistência AOF: o cache sobrevive a restarts (a fonte de verdade
+    # continua sendo o PostgreSQL, com rehidratação automática).
+    command: ["redis-server", "--appendonly", "yes"]
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - yui_redisdata:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       retries: 10
 
+  # API da Yui em container — opcional em desenvolvimento
+  # (suba com: docker compose --profile app up)
+  app:
+    build: .
+    profiles: ["app"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-yui}:${POSTGRES_PASSWORD:-yui_password}@postgres:5432/${POSTGRES_DB:-yui}
+      REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
 volumes:
   yui_pgdata:
+  yui_redisdata:
