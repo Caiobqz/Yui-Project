@@ -1,5 +1,9 @@
-"""Dublês de teste compartilhados (Redis e provedor de IA)."""
-from app.services.llm.base import ChatMessage, LLMProvider, LLMResponse
+"""Dublês de teste compartilhados (Redis, provedor de IA e embeddings)."""
+import hashlib
+import math
+
+from app.services.embeddings.base import EmbeddingProvider
+from app.services.llm.base import ChatMessage, LLMProvider, LLMResponse, ToolSpec
 
 
 class FakePipeline:
@@ -64,19 +68,59 @@ class FakeRedis:
 
 
 class FakeLLM(LLMProvider):
-    """Provedor determinístico: ecoa a última mensagem do usuário."""
+    """Provedor determinístico.
 
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, list[ChatMessage]]] = []
+    Sem script: ecoa a última mensagem do usuário.
+    Com script: devolve as respostas na ordem (permite roteirizar chamadas
+    de ferramenta, extração de memórias, planos etc.).
+    """
+
+    def __init__(self, script: list[LLMResponse] | None = None) -> None:
+        self.calls: list[tuple[str, list[ChatMessage], list[ToolSpec] | None]] = []
+        self.script: list[LLMResponse] = list(script or [])
 
     async def generate(
-        self, system_prompt: str, messages: list[ChatMessage]
+        self,
+        system_prompt: str,
+        messages: list[ChatMessage],
+        tools: list[ToolSpec] | None = None,
     ) -> LLMResponse:
-        self.calls.append((system_prompt, messages))
-        last_user = next(m for m in reversed(messages) if m.role == "user")
+        self.calls.append((system_prompt, messages, tools))
+        if self.script:
+            return self.script.pop(0)
+        last_user = next((m for m in reversed(messages) if m.role == "user"), None)
+        content = f"eco: {last_user.content}" if last_user else "eco:"
         return LLMResponse(
-            content=f"eco: {last_user.content}",
+            content=content,
             model="fake-model",
             input_tokens=10,
             output_tokens=5,
         )
+
+
+class FakeEmbeddings(EmbeddingProvider):
+    """Embeddings determinísticos.
+
+    Textos presentes em `mapping` usam o vetor definido pelo teste (para
+    controlar similaridade); os demais recebem um vetor pseudo-aleatório
+    derivado do hash do texto (quase ortogonal aos demais).
+    """
+
+    def __init__(
+        self,
+        mapping: dict[str, list[float]] | None = None,
+        dimension: int = 8,
+    ) -> None:
+        self.mapping = dict(mapping or {})
+        self.dimension = dimension
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        return [self._vector(text) for text in texts]
+
+    def _vector(self, text: str) -> list[float]:
+        if text in self.mapping:
+            return self.mapping[text]
+        digest = hashlib.sha256(text.encode("utf-8")).digest()
+        raw = [digest[i] / 255.0 - 0.5 for i in range(self.dimension)]
+        norm = math.sqrt(sum(x * x for x in raw)) or 1.0
+        return [x / norm for x in raw]

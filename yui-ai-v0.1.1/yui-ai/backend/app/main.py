@@ -6,13 +6,14 @@ from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api.routes import auth, chat, health, memories
+from app.api.routes import auth, chat, health, memories, notes, tasks
 from app.core.config import get_settings
 from app.core.exceptions import ConversationNotFoundError, RateLimitExceededError
 from app.core.personality import get_personality
 from app.database.redis_client import close_redis
 from app.database.session import engine
 from app.models import Base
+from app.services.embeddings.factory import get_embedding_provider
 from app.services.llm.base import LLMError
 from app.services.llm.factory import get_llm_provider
 
@@ -26,11 +27,13 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    # Fail-fast: configuração, personalidade e provedor de IA são validados
-    # no boot. Uma API key ausente falha AQUI, não na primeira requisição.
+    # Fail-fast: configuração, personalidade e provedores (LLM e embeddings)
+    # são validados no boot. Uma API key ausente falha AQUI, não na primeira
+    # requisição.
     settings.validate_runtime()
     get_personality()
     get_llm_provider()
+    get_embedding_provider()
 
     # Em desenvolvimento, cria as tabelas automaticamente.
     # Em produção, use exclusivamente as migrations do Alembic.
@@ -103,3 +106,5 @@ app.include_router(health.router)
 app.include_router(auth.router, prefix=settings.api_v1_prefix)
 app.include_router(chat.router, prefix=settings.api_v1_prefix)
 app.include_router(memories.router, prefix=settings.api_v1_prefix)
+app.include_router(tasks.router, prefix=settings.api_v1_prefix)
+app.include_router(notes.router, prefix=settings.api_v1_prefix)

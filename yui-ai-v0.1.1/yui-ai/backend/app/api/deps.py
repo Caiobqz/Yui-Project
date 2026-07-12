@@ -6,14 +6,17 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents.memory_agent import MemoryAgent
 from app.agents.yui_core import YuiCore
 from app.core.security import decode_access_token
 from app.database.redis_client import get_redis
 from app.database.session import async_session_factory, get_db_session
 from app.memory.short_term import ShortTermMemory
 from app.models.user import User
+from app.services.embeddings.factory import get_embedding_provider
 from app.services.llm.factory import get_llm_provider
 from app.services.rate_limiter import RateLimiter
+from app.tools.registry import build_default_registry
 
 DbSession = Annotated[AsyncSession, Depends(get_db_session)]
 
@@ -66,7 +69,21 @@ async def get_yui_core() -> YuiCore:
         short_term=ShortTermMemory(redis),
         llm=get_llm_provider(),
         rate_limiter=RateLimiter(redis),
+        embeddings=get_embedding_provider(),
+        registry=build_default_registry(),
     )
 
 
 Yui = Annotated[YuiCore, Depends(get_yui_core)]
+
+
+def get_memory_agent() -> MemoryAgent:
+    """MemoryAgent para a rota de memórias (mesma triagem/dedupe da conversa)."""
+    return MemoryAgent(
+        llm=get_llm_provider(),
+        embeddings=get_embedding_provider(),
+        session_factory=async_session_factory,
+    )
+
+
+MemoryAgentDep = Annotated[MemoryAgent, Depends(get_memory_agent)]

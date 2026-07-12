@@ -22,6 +22,13 @@ class Conversation(Base, UUIDMixin, TimestampMixin):
         nullable=False,
     )
     title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Resumo das mensagens antigas (fora da janela de contexto), mantido em
+    # background — compactação de contexto para conversas longas.
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Maior `sequence` já coberta pelo resumo.
+    summary_up_to_sequence: Mapped[int] = mapped_column(
+        BigInteger, default=0, server_default="0", nullable=False
+    )
 
     messages: Mapped[list["Message"]] = relationship(
         back_populates="conversation",

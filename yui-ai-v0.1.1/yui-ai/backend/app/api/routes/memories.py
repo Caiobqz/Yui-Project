@@ -1,9 +1,13 @@
-"""Gerenciamento da memória de longo prazo do usuário autenticado."""
+"""Gerenciamento da memória de longo prazo do usuário autenticado.
+
+A criação via API delega ao MemoryAgent: mesma triagem do Guardian,
+deduplicação e embedding da criação via conversa.
+"""
 import uuid
 
 from fastapi import APIRouter, HTTPException, status
 
-from app.api.deps import CurrentUser, DbSession
+from app.api.deps import CurrentUser, DbSession, MemoryAgentDep
 from app.api.schemas import MemoryCreateRequest, MemoryResponse
 from app.services.memory_service import MemoryService
 
@@ -12,15 +16,22 @@ router = APIRouter(prefix="/memories", tags=["memories"])
 
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_memory(
-    payload: MemoryCreateRequest, user: CurrentUser, session: DbSession
+    payload: MemoryCreateRequest, user: CurrentUser, agent: MemoryAgentDep
 ) -> MemoryResponse:
-    service = MemoryService(session)
-    entry = await service.create(
+    entry = await agent.remember(
         user_id=user.id,
-        category=payload.category,
         content=payload.content,
-        relevance=payload.relevance,
+        category=payload.category,
+        importance=payload.relevance,
     )
+    if entry is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "Memória não salva: duplicada ou com conteúdo sensível "
+                "(credenciais/segredos não são armazenados)."
+            ),
+        )
     return MemoryResponse.model_validate(entry)
 
 

@@ -1,24 +1,36 @@
 """Fixtures de teste: banco SQLite em memória, app com dependências dublês.
 
-Os testes de API exercitam as rotas reais (auth, memórias, chat) contra um
-banco efêmero, sem Postgres/Redis externos — possível porque os modelos usam
-o tipo portável sqlalchemy.Uuid e o YuiCore recebe dependências injetadas.
+Os testes de API exercitam as rotas reais (auth, memórias, chat, tarefas)
+contra um banco efêmero, sem Postgres/Redis externos. Extração de memórias e
+sumarização pós-turno ficam DESLIGADAS por env (determinismo); os testes
+desses componentes os exercitam diretamente.
 """
-from collections.abc import AsyncGenerator
+import os
 
-import pytest
-from httpx import ASGITransport, AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import StaticPool
+os.environ.setdefault("MEMORY_EXTRACTION_ENABLED", "false")
+os.environ.setdefault("SUMMARIZATION_ENABLED", "false")
 
-from app.agents.yui_core import YuiCore
-from app.api.deps import get_yui_core
-from app.database.session import get_db_session
-from app.main import app as fastapi_app
-from app.memory.short_term import ShortTermMemory
-from app.models import Base
-from app.services.rate_limiter import RateLimiter
-from tests.fakes import FakeLLM, FakeRedis
+from collections.abc import AsyncGenerator  # noqa: E402
+
+import pytest  # noqa: E402
+from httpx import ASGITransport, AsyncClient  # noqa: E402
+from sqlalchemy.ext.asyncio import (  # noqa: E402
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
+from sqlalchemy.pool import StaticPool  # noqa: E402
+
+from app.agents.memory_agent import MemoryAgent  # noqa: E402
+from app.agents.yui_core import YuiCore  # noqa: E402
+from app.api.deps import get_memory_agent, get_yui_core  # noqa: E402
+from app.database.session import get_db_session  # noqa: E402
+from app.main import app as fastapi_app  # noqa: E402
+from app.memory.short_term import ShortTermMemory  # noqa: E402
+from app.models import Base  # noqa: E402
+from app.services.rate_limiter import RateLimiter  # noqa: E402
+from app.tools.registry import build_default_registry  # noqa: E402
+from tests.fakes import FakeLLM, FakeRedis  # noqa: E402
 
 
 @pytest.fixture
@@ -72,10 +84,18 @@ async def client(session_factory, fake_redis, fake_llm) -> AsyncGenerator[AsyncC
             short_term=ShortTermMemory(fake_redis),  # type: ignore[arg-type]
             llm=fake_llm,
             rate_limiter=RateLimiter(fake_redis),  # type: ignore[arg-type]
+            embeddings=None,
+            registry=build_default_registry(),
+        )
+
+    def override_memory_agent() -> MemoryAgent:
+        return MemoryAgent(
+            llm=fake_llm, embeddings=None, session_factory=session_factory
         )
 
     fastapi_app.dependency_overrides[get_db_session] = override_db_session
     fastapi_app.dependency_overrides[get_yui_core] = override_yui_core
+    fastapi_app.dependency_overrides[get_memory_agent] = override_memory_agent
     transport = ASGITransport(app=fastapi_app)
     async with AsyncClient(transport=transport, base_url="http://test") as http:
         yield http

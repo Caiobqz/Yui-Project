@@ -1,133 +1,119 @@
-# Yui AI Assistant — v0.1.2
+# Yui AI Assistant — v0.2
 
-Backend da Yui: assistente pessoal de IA com usuários autenticados, memória
-confiável (Redis como cache + PostgreSQL como fonte de verdade), personalidade
-configurável e camada abstrata de modelos de linguagem (Claude / OpenAI).
+Backend da Yui: inteligência pessoal com memória semântica (RAG), extração
+automática de memórias, agentes especializados, ferramentas (tool calling),
+compactação de contexto e streaming — sobre a base autenticada e testada
+da v0.1.2.
 
 ## Arquitetura
 
 ```
 app/
-  core/        Configurações (fail-fast), segurança (JWT/bcrypt), personalidade, exceções
-  agents/      Yui Core — orquestra cada turno em 3 fases (contexto → LLM → persistência)
+  core/        Configurações (fail-fast), segurança (JWT/bcrypt), personalidade,
+               exceções, background (pós-turno)
+  agents/      YuiCore + MemoryAgent, PlannerAgent, ResearchAgent, TaskAgent,
+               GuardianAgent
+  tools/       Ferramentas expostas ao modelo: tarefas, notas, memórias,
+               planner, busca web (registry + validação de schema)
   memory/      Memória de curto prazo (Redis, cache)
-  models/      SQLAlchemy: users, conversations, messages, memórias, uso
-  services/    LLM (abstração + provedores), memórias, histórico (rehidratação),
-               contexto, rate limiting, contabilidade de uso
-  api/         Rotas HTTP, schemas e dependências (auth via Bearer token)
+  models/      SQLAlchemy: users, conversations, messages, memórias (pgvector),
+               tasks (planos/etapas), notes, uso
+  services/    LLM (abstração + Claude/OpenAI, tools e streaming), embeddings,
+               memórias, histórico, resumo, rate limiting, contabilidade
+  api/         Rotas HTTP (REST + SSE), schemas e dependências
   database/    Sessão async do PostgreSQL (pool configurável) e cliente Redis
-alembic/       Migrations versionadas (fonte de verdade do schema em produção)
-tests/         Unitários + integração de API (SQLite em memória, dublês de Redis/LLM)
+alembic/       Migrations versionadas (0001 schema, 0002 memória semântica)
+tests/         56 testes: unitários + integração de API (SQLite em memória)
 ```
 
-Fluxo de uma mensagem: API (usuário do token) → YuiCore → *fase 1:* conversa +
-memórias + histórico (Redis, com rehidratação do PostgreSQL) → *fase 2:*
-personalidade (estável) + memórias delimitadas → LLMProvider **sem conexão de
-banco aberta** → *fase 3:* persistência com `sequence` determinística +
-registro de tokens/custo → cache atualizado.
+### Fluxo de um turno
 
-## Segurança
+```
+Usuário → API (token JWT)
+  Fase 0  rate limit + embedding da consulta        (sem banco)
+  Fase 1  conversa + memórias semânticas + histórico
+          (rehidratação Redis←PostgreSQL) + resumo  (conexão curta)
+  Fase 2  loop agêntico: LLM ⇄ ferramentas
+          Guardian valida → TaskAgent executa       (SEM conexão de banco)
+  Fase 3  persiste turno + uso por chamada          (conexão curta)
+  Pós-turno (background): MemoryAgent extrai memórias novas;
+          ConversationSummarizer compacta conversas longas
+```
 
-- **Autenticação JWT** — o usuário é identificado exclusivamente pelo token;
-  nenhuma rota aceita `user_id` do cliente.
-- **Isolamento** — conversas e memórias têm FK para `users`; acessos cruzados
-  respondem 404 sem revelar existência.
-- **Rate limiting** — mensagens/minuto e orçamento diário de tokens por
-  usuário (Redis), com limites por plano preparados para expansão.
-- **Prompt injection** — memórias entram no prompt delimitadas como dados.
-- **Erros** — detalhes ficam no log; o cliente recebe mensagens genéricas.
+### Agentes
 
-## Requisitos
+| Agente | Responsabilidade |
+|---|---|
+| **YuiCore** | Entende intenção (via tool calling), coordena o turno e a resposta final |
+| **MemoryAgent** | Cria (explícita e automaticamente), recupera (semântica/lexical) e deduplica memórias |
+| **PlannerAgent** | Divide objetivos em etapas persistidas como plano acompanhável |
+| **ResearchAgent** | Busca informações externas (DuckDuckGo; `WEB_SEARCH_ENABLED`) |
+| **TaskAgent** | Executa chamadas de ferramenta validadas, sem derrubar o turno |
+| **GuardianAgent** | Valida ferramentas/argumentos, bloqueia segredos em memórias, limita resultados |
 
-- Python 3.11+
-- Docker (para PostgreSQL e Redis) ou instâncias locais
+### Memória semântica (RAG)
+
+Conversa → análise pós-turno (LLM) → triagem (Guardian) → embedding →
+pgvector → recuperação por similaridade de cosseno no próximo turno.
+Cada memória tem conteúdo, categoria, importância, confiança, origem
+(`user`/`extracted`), data de criação e última utilização. Com
+`EMBEDDING_PROVIDER=disabled` (a Anthropic não oferece API de embeddings),
+a recuperação cai automaticamente para busca lexical.
+
+### Ferramentas disponíveis ao modelo
+
+`create_task`, `list_tasks`, `complete_task`, `create_note`, `list_notes`,
+`save_memory`, `create_plan` e `web_search` (opcional). Toda chamada passa
+pelo GuardianAgent antes de executar; resultados voltam ao modelo até a
+resposta final (máximo `LLM_MAX_TOOL_ITERATIONS` rodadas).
 
 ## Executando localmente
 
 ```bash
-# 1. Infraestrutura (PostgreSQL com pgvector + Redis com AOF)
-docker compose up -d
-
-# 2. Ambiente Python
-python -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
+docker compose up -d                      # PostgreSQL (pgvector) + Redis (AOF)
+python -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
-
-# 3. Configuração
-cp .env.example .env
-# edite .env: ANTHROPIC_API_KEY (ou OPENAI_API_KEY) e, fora de development,
-# JWT_SECRET_KEY. A aplicação NÃO SOBE com configuração essencial ausente.
-
-# 4. Schema do banco
+cp .env.example .env                      # ANTHROPIC_API_KEY; opcional: OPENAI_API_KEY + EMBEDDING_PROVIDER=openai
 alembic upgrade head
-
-# 5. Subir a API
-uvicorn app.main:app --reload
+uvicorn app.main:app --reload             # docs em http://localhost:8000/docs
 ```
-
-API completa em container: `docker compose --profile app up --build`.
-
-Documentação interativa: http://localhost:8000/docs
 
 ## Endpoints principais
 
-| Método | Rota                          | Auth | Descrição                              |
-|--------|-------------------------------|------|----------------------------------------|
-| POST   | /api/v1/auth/register         | —    | Criar conta                            |
-| POST   | /api/v1/auth/login            | —    | Obter token JWT                        |
-| GET    | /api/v1/auth/me               | ✅   | Perfil do usuário autenticado          |
-| POST   | /api/v1/chat                  | ✅   | Conversar com a Yui                    |
-| POST   | /api/v1/memories              | ✅   | Salvar memória de longo prazo          |
-| GET    | /api/v1/memories              | ✅   | Listar memórias próprias               |
-| DELETE | /api/v1/memories/{memory_id}  | ✅   | Apagar memória própria                 |
-| GET    | /health                       | —    | Liveness (processo vivo)               |
-| GET    | /health/ready                 | —    | Readiness (503 se Postgres/Redis fora) |
+| Método | Rota                          | Auth | Descrição                                   |
+|--------|-------------------------------|------|----------------------------------------------|
+| POST   | /api/v1/auth/register         | —    | Criar conta                                  |
+| POST   | /api/v1/auth/login            | —    | Obter token JWT                              |
+| GET    | /api/v1/auth/me               | ✅   | Perfil do usuário                            |
+| POST   | /api/v1/chat                  | ✅   | Conversar (resposta completa)                |
+| POST   | /api/v1/chat/stream           | ✅   | Conversar via SSE (delta/tool/done/error)    |
+| GET/POST/DELETE | /api/v1/memories     | ✅   | Memórias de longo prazo                      |
+| GET    | /api/v1/tasks?status=         | ✅   | Tarefas e planos (progresso)                 |
+| GET    | /api/v1/notes                 | ✅   | Notas                                        |
+| GET    | /health, /health/ready        | —    | Liveness / readiness                         |
 
-### Exemplo
+### Exemplo de streaming
 
 ```bash
-curl -s -X POST http://localhost:8000/api/v1/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{"email": "leo@example.com", "password": "senha-segura-1", "name": "Leo"}'
-
-TOKEN=$(curl -s -X POST http://localhost:8000/api/v1/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email": "leo@example.com", "password": "senha-segura-1"}' | jq -r .access_token)
-
-curl -s -X POST http://localhost:8000/api/v1/chat \
+curl -N -X POST http://localhost:8000/api/v1/chat/stream \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"message": "O que você sabe sobre meus estudos?"}'
+  -d '{"message": "Me lembre de estudar Python amanhã às 18h"}'
+# data: {"type":"tool","tools":["create_task"]}
+# data: {"type":"delta","text":"Anotado! ..."}
+# data: {"type":"done","conversation_id":"...","model":"...","memories_used":1}
 ```
-
-## Personalidade
-
-Editável em `app/config/personality.yaml` (nome, objetivo, estilo, regras e
-limitações). Validada no boot — YAML inválido impede o start. O caminho é
-resolvido relativo à raiz do backend, independente do CWD.
-
-## Migrations
-
-```bash
-alembic upgrade head                                  # aplicar
-alembic revision --autogenerate -m "descrição"        # criar nova
-```
-
-Em desenvolvimento, `Base.metadata.create_all` roda no startup por
-conveniência; produção usa exclusivamente as migrations.
 
 ## Qualidade
 
 ```bash
-pytest              # testes (unitários + integração de API)
+pytest                            # 56 testes
 ruff check app tests alembic
 mypy
 ```
 
 ## Roadmap
 
-- **v0.2** — embeddings + pgvector, RAG, extração automática de memórias
-  (ponto de troca: `MemoryService.retrieve_relevant`, sem mudança de contrato),
-  streaming SSE (ponto de extensão: `LLMProvider.generate_stream`), CI.
-- **v0.3** — tool use no contrato do provider, agentes (Memory/Guardian),
-  voz (STT/TTS).
+- **v0.3** — voz (STT/TTS sobre o canal SSE), roteamento de modelo barato para
+  extração/resumo, índice ivfflat no pgvector, ferramentas calendar/files
+  (exigem sandbox do Guardian), CI.
 - **v0.4** — interface avançada e avatar.
