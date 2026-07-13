@@ -1,20 +1,20 @@
-"""Testes do MemoryAgent: extração automática, dedupe, triagem e recuperação."""
+"""Testes do Memory System: análise pós-turno, consolidação e recuperação."""
 import json
 import uuid
 
 from sqlalchemy import select
 
 from app.agents.memory_agent import MemoryAgent
+from app.cognition.analyzer import TurnAnalyzer, parse_analysis
 from app.models.memory import MemoryEntry
-from app.models.usage import UsageRecord
 from app.models.user import User
 from app.services.llm.base import LLMResponse
 from tests.fakes import FakeEmbeddings, FakeLLM
 
 
-def _extraction_response(memories: list[dict]) -> LLMResponse:
+def _analysis_response(memories: list[dict], adaptation: list[str] | None = None) -> LLMResponse:
     return LLMResponse(
-        content=json.dumps({"memories": memories}),
+        content=json.dumps({"memories": memories, "adaptation": adaptation or []}),
         model="fake-model",
         input_tokens=20,
         output_tokens=10,
@@ -29,42 +29,44 @@ async def _create_user(session_factory) -> uuid.UUID:
         return user.id
 
 
-async def test_extraction_stores_memory_with_metadata(session_factory) -> None:
-    user_id = await _create_user(session_factory)
+async def test_analysis_produces_typed_memories_and_adaptation(session_factory) -> None:
     llm = FakeLLM(
         script=[
-            _extraction_response(
+            _analysis_response(
                 [
                     {
-                        "content": "Quer trabalhar com inteligência artificial",
-                        "category": "objetivos",
-                        "importance": 0.9,
-                        "confidence": 0.85,
+                        "content": "Terminou o projeto do curso",
+                        "category": "conquistas",
+                        "type": "episodic",
+                        "importance": 0.8,
+                        "confidence": 0.9,
                     }
-                ]
+                ],
+                adaptation=["Prefere exemplos práticos"],
             )
         ]
     )
-    agent = MemoryAgent(llm, FakeEmbeddings(), session_factory)
+    analysis = await TurnAnalyzer(llm).analyze("terminei o projeto!", "Parabéns!")
+    assert len(analysis.memories) == 1
+    assert analysis.memories[0].memory_type == "episodic"
+    assert analysis.adaptation == ["Prefere exemplos práticos"]
 
-    saved = await agent.extract_from_turn(
-        user_id, uuid.uuid4(), "quero muito trabalhar com IA", "Que ótimo objetivo!"
-    )
-    assert saved == 1
+    user_id = await _create_user(session_factory)
+    agent = MemoryAgent(llm, FakeEmbeddings(), session_factory)
+    created = await agent.store_candidates(user_id, analysis.memories)
+    assert created == 1
 
     async with session_factory() as session:
         entry = (await session.execute(select(MemoryEntry))).scalar_one()
+        assert entry.memory_type == "episodic"
         assert entry.source == "extracted"
-        assert entry.category == "objetivos"
-        assert entry.relevance == 0.9
-        assert entry.confidence == 0.85
+        assert entry.relevance == 0.8
+        assert entry.confidence == 0.9
         assert entry.embedding is not None
-        # A chamada de extração foi contabilizada.
-        usage = (await session.execute(select(UsageRecord))).scalar_one()
-        assert usage.input_tokens == 20
 
 
-async def test_extraction_skips_duplicates_via_embedding(session_factory) -> None:
+async def test_duplicate_candidate_reinforces_existing_memory(session_factory) -> None:
+    """Consolidação: informação reconfirmada fortalece a memória, não duplica."""
     user_id = await _create_user(session_factory)
     same_vector = [1.0, 0.0, 0.0, 0.0]
     embeddings = FakeEmbeddings(
@@ -74,57 +76,73 @@ async def test_extraction_skips_duplicates_via_embedding(session_factory) -> Non
         },
         dimension=4,
     )
-    extraction = [
-        _extraction_response(
-            [{"content": "Gosta de estudar à noite", "category": "habitos",
-              "importance": 0.6, "confidence": 0.9}]
-        ),
-        _extraction_response(
-            [{"content": "Prefere estudar no período noturno", "category": "habitos",
-              "importance": 0.6, "confidence": 0.9}]
-        ),
-    ]
-    agent = MemoryAgent(FakeLLM(script=extraction), embeddings, session_factory)
+    agent = MemoryAgent(FakeLLM(), embeddings, session_factory)
 
-    assert await agent.extract_from_turn(user_id, uuid.uuid4(), "a", "b") == 1
-    # Semanticamente idêntica (mesmo vetor) → deduplicada.
-    assert await agent.extract_from_turn(user_id, uuid.uuid4(), "c", "d") == 0
-
-
-async def test_extraction_rejects_secrets_and_low_confidence(session_factory) -> None:
-    user_id = await _create_user(session_factory)
-    extraction = [
-        _extraction_response(
-            [
-                {"content": "senha do email: hunter2", "category": "x",
-                 "importance": 0.9, "confidence": 0.9},
-                {"content": "Talvez goste de café", "category": "preferencias",
-                 "importance": 0.3, "confidence": 0.2},
-            ]
-        )
-    ]
-    agent = MemoryAgent(FakeLLM(script=extraction), FakeEmbeddings(), session_factory)
-
-    assert await agent.extract_from_turn(user_id, uuid.uuid4(), "a", "b") == 0
-
-
-async def test_extraction_tolerates_non_json_response(session_factory) -> None:
-    user_id = await _create_user(session_factory)
-    llm = FakeLLM(
-        script=[LLMResponse(content="claro! aqui vai...", model="fake-model")]
+    first = await agent.remember(
+        user_id, "Gosta de estudar à noite", category="habitos", confidence=0.7
     )
-    agent = MemoryAgent(llm, None, session_factory)
-    assert await agent.extract_from_turn(user_id, uuid.uuid4(), "a", "b") == 0
+    assert first is not None
+
+    analysis_memories, _ = parse_analysis(
+        json.dumps(
+            {
+                "memories": [
+                    {
+                        "content": "Prefere estudar no período noturno",
+                        "category": "habitos",
+                        "type": "procedural",
+                        "importance": 0.6,
+                        "confidence": 0.95,
+                    }
+                ]
+            }
+        )
+    )
+    created = await agent.store_candidates(user_id, analysis_memories)
+    assert created == 0  # não criou nova...
+
+    async with session_factory() as session:
+        entry = (await session.execute(select(MemoryEntry))).scalar_one()
+        assert entry.usage_count == 1  # ...mas reforçou a existente
+        assert entry.confidence == 0.95
+        assert entry.last_used_at is not None
+
+
+async def test_candidates_rejected_by_guardian_or_confidence(session_factory) -> None:
+    user_id = await _create_user(session_factory)
+    memories, _ = parse_analysis(
+        json.dumps(
+            {
+                "memories": [
+                    {"content": "senha do email: hunter2", "category": "x",
+                     "type": "semantic", "importance": 0.9, "confidence": 0.9},
+                    {"content": "Talvez goste de café", "category": "preferencias",
+                     "type": "semantic", "importance": 0.3, "confidence": 0.2},
+                ]
+            }
+        )
+    )
+    agent = MemoryAgent(FakeLLM(), FakeEmbeddings(), session_factory)
+    assert await agent.store_candidates(user_id, memories) == 0
+
+
+def test_parse_analysis_tolerates_garbage() -> None:
+    assert parse_analysis("claro! aqui vai...") == ([], [])
+    assert parse_analysis('{"memories": "não é lista"}') == ([], [])
+    memories, notes = parse_analysis(
+        '```json\n{"memories": [], "adaptation": ["Nota"]}\n```'
+    )
+    assert memories == [] and notes == ["Nota"]
 
 
 async def test_retrieve_semantic_without_shared_keywords(
     session_factory, db_session
 ) -> None:
-    """O exemplo do requisito: memória sobre IA recuperada por pergunta
-    sobre estudos, sem palavras em comum."""
+    """Memória sobre IA recuperada por pergunta sobre estudos, sem palavras
+    em comum — e com recência/frequência atualizadas."""
     user_id = await _create_user(session_factory)
     memory_vec = [1.0, 0.0, 0.0, 0.0]
-    query_vec = [0.95, 0.05, 0.0, 0.0]  # próximo, mas não idêntico
+    query_vec = [0.95, 0.05, 0.0, 0.0]
     embeddings = FakeEmbeddings(
         mapping={
             "Usuário quer trabalhar com inteligência artificial": memory_vec,
@@ -148,5 +166,5 @@ async def test_retrieve_semantic_without_shared_keywords(
     assert [m.content for m in results] == [
         "Usuário quer trabalhar com inteligência artificial"
     ]
-    # Recuperação marca last_used_at.
     assert results[0].last_used_at is not None
+    assert results[0].usage_count == 1

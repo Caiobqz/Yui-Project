@@ -79,3 +79,34 @@ class TaskService:
         """(etapas concluídas, total de etapas)."""
         done = sum(1 for t in children if t.status == "done")
         return done, len(children)
+
+    async def get_plan(
+        self, user_id: uuid.UUID, plan_id: uuid.UUID
+    ) -> tuple[Task, list[Task]] | None:
+        """Plano (tarefa pai) e suas etapas, respeitando o dono."""
+        result = await self._session.execute(
+            select(Task).where(
+                Task.id == plan_id,
+                Task.user_id == user_id,
+                Task.parent_id.is_(None),
+            )
+        )
+        parent = result.scalar_one_or_none()
+        if parent is None:
+            return None
+        return parent, await self.list_children(parent.id)
+
+    async def plans_with_children(
+        self, user_id: uuid.UUID
+    ) -> list[tuple[Task, list[Task]]]:
+        result = await self._session.execute(
+            select(Task)
+            .where(Task.user_id == user_id, Task.parent_id.is_(None))
+            .order_by(Task.created_at)
+        )
+        plans: list[tuple[Task, list[Task]]] = []
+        for parent in result.scalars():
+            children = await self.list_children(parent.id)
+            if children:  # só tarefas pai COM etapas são planos
+                plans.append((parent, children))
+        return plans

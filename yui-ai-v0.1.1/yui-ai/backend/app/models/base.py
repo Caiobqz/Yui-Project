@@ -10,6 +10,15 @@ def utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+def ensure_aware(dt: datetime) -> datetime:
+    """Normaliza datetimes para UTC-aware.
+
+    O SQLite (testes) devolve datetimes naive mesmo em colunas
+    timezone=True; aritmética com utcnow() exige ambos aware.
+    """
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
+
+
 class Base(DeclarativeBase):
     pass
 

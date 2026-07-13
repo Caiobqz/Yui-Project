@@ -1,119 +1,106 @@
-# Yui AI Assistant — v0.2
+# Yui AI Assistant — v0.3 (Cognitive Core)
 
-Backend da Yui: inteligência pessoal com memória semântica (RAG), extração
-automática de memórias, agentes especializados, ferramentas (tool calling),
-compactação de contexto e streaming — sobre a base autenticada e testada
-da v0.1.2.
+Backend da Yui: inteligência pessoal com identidade permanente, memória
+hierárquica com consolidação e esquecimento, adaptação por usuário,
+curiosidade funcional, contexto emocional, agentes, ferramentas com sistema
+de permissões e streaming.
 
-## Arquitetura
+**Realismo:** a Yui não possui consciência, emoções reais nem vontade
+própria. Todos os comportamentos do núcleo cognitivo são modelos
+computacionais de interação — e a própria identidade declara isso ao modelo.
 
-```
-app/
-  core/        Configurações (fail-fast), segurança (JWT/bcrypt), personalidade,
-               exceções, background (pós-turno)
-  agents/      YuiCore + MemoryAgent, PlannerAgent, ResearchAgent, TaskAgent,
-               GuardianAgent
-  tools/       Ferramentas expostas ao modelo: tarefas, notas, memórias,
-               planner, busca web (registry + validação de schema)
-  memory/      Memória de curto prazo (Redis, cache)
-  models/      SQLAlchemy: users, conversations, messages, memórias (pgvector),
-               tasks (planos/etapas), notes, uso
-  services/    LLM (abstração + Claude/OpenAI, tools e streaming), embeddings,
-               memórias, histórico, resumo, rate limiting, contabilidade
-  api/         Rotas HTTP (REST + SSE), schemas e dependências
-  database/    Sessão async do PostgreSQL (pool configurável) e cliente Redis
-alembic/       Migrations versionadas (0001 schema, 0002 memória semântica)
-tests/         56 testes: unitários + integração de API (SQLite em memória)
-```
-
-### Fluxo de um turno
+## Yui Cognitive Core
 
 ```
-Usuário → API (token JWT)
-  Fase 0  rate limit + embedding da consulta        (sem banco)
-  Fase 1  conversa + memórias semânticas + histórico
-          (rehidratação Redis←PostgreSQL) + resumo  (conexão curta)
-  Fase 2  loop agêntico: LLM ⇄ ferramentas
-          Guardian valida → TaskAgent executa       (SEM conexão de banco)
-  Fase 3  persiste turno + uso por chamada          (conexão curta)
-  Pós-turno (background): MemoryAgent extrai memórias novas;
-          ConversationSummarizer compacta conversas longas
+Yui Cognitive Core
+  ├── Identity System        cognition/identity.py — imutável, em código
+  ├── Memory System          working (Redis+resumo) | semantic | episodic |
+  │                          procedural | relationship; consolidação por
+  │                          reforço, decaimento por meia-vida, poda
+  ├── Personality Engine     traços/estilo (YAML) — QUEM é ≠ COMO conversa
+  ├── Reasoning Engine       cognition/reasoning.py — sinais → estratégia
+  ├── Curiosity Engine       lacunas (objetivos desconhecidos, planos parados)
+  │                          → no máximo 1 pergunta sugerida por turno
+  ├── Adaptation Engine      notas aprendidas por usuário ("prefere exemplos
+  │                          práticos"), com dedupe e teto
+  ├── Emotional Context      heurística: frustração/dificuldade/pressa/
+  │                          motivação → modula tom e complexidade
+  ├── Planning System        criar, acompanhar (get_plan_progress) e revisar
+  │                          (review_plan) objetivos
+  ├── Action System          ferramentas validadas pelo Guardian
+  └── Permission System      autorização por usuário/ferramenta; categorias
+                             sensíveis futuras nascem negadas
 ```
 
-### Agentes
+### Fluxo cognitivo de um turno
 
-| Agente | Responsabilidade |
-|---|---|
-| **YuiCore** | Entende intenção (via tool calling), coordena o turno e a resposta final |
-| **MemoryAgent** | Cria (explícita e automaticamente), recupera (semântica/lexical) e deduplica memórias |
-| **PlannerAgent** | Divide objetivos em etapas persistidas como plano acompanhável |
-| **ResearchAgent** | Busca informações externas (DuckDuckGo; `WEB_SEARCH_ENABLED`) |
-| **TaskAgent** | Executa chamadas de ferramenta validadas, sem derrubar o turno |
-| **GuardianAgent** | Valida ferramentas/argumentos, bloqueia segredos em memórias, limita resultados |
+```
+Entrada → contexto emocional (heurística)
+        → memórias relevantes (similaridade × importância × recência)
+        → modelo do usuário (adaptação + relacionamento) + permissões
+        → curiosidade (lacunas) → estratégia → system prompt
+        → LLM ⇄ ferramentas (Guardian + permissões; TaskAgent executa)
+        → persistência + interação registrada
+Pós-turno (modelo utilitário barato, em background):
+        TurnAnalyzer → memórias tipadas + notas de adaptação
+        → manutenção periódica (esquecimento) → resumo de conversas longas
+```
 
-### Memória semântica (RAG)
+### Memória hierárquica
 
-Conversa → análise pós-turno (LLM) → triagem (Guardian) → embedding →
-pgvector → recuperação por similaridade de cosseno no próximo turno.
-Cada memória tem conteúdo, categoria, importância, confiança, origem
-(`user`/`extracted`), data de criação e última utilização. Com
-`EMBEDDING_PROVIDER=disabled` (a Anthropic não oferece API de embeddings),
-a recuperação cai automaticamente para busca lexical.
+| Camada | Onde | Exemplo |
+|---|---|---|
+| Working | Redis + `conversations.summary` | contexto atual |
+| Semantic | `memory_entries` (type=semantic) | "gosta de programação" |
+| Episodic | type=episodic (meia-vida 30d) | "terminou o projeto X" |
+| Procedural | type=procedural | "prefere commits pequenos" |
+| Relationship | type=relationship + `user_profiles` | marcos e continuidade |
 
-### Ferramentas disponíveis ao modelo
-
-`create_task`, `list_tasks`, `complete_task`, `create_note`, `list_notes`,
-`save_memory`, `create_plan` e `web_search` (opcional). Toda chamada passa
-pelo GuardianAgent antes de executar; resultados voltam ao modelo até a
-resposta final (máximo `LLM_MAX_TOOL_ITERATIONS` rodadas).
+Cada memória tem importância, confiança, origem, data, frequência de uso e
+última utilização. Reconfirmações **reforçam** a memória existente
+(consolidação); memórias extraídas, nunca usadas e irrelevantes são
+**podadas** — as criadas pelo usuário, nunca.
 
 ## Executando localmente
 
 ```bash
-docker compose up -d                      # PostgreSQL (pgvector) + Redis (AOF)
+docker compose up -d
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
-cp .env.example .env                      # ANTHROPIC_API_KEY; opcional: OPENAI_API_KEY + EMBEDDING_PROVIDER=openai
+cp .env.example .env                      # ANTHROPIC_API_KEY etc.
 alembic upgrade head
 uvicorn app.main:app --reload             # docs em http://localhost:8000/docs
 ```
 
 ## Endpoints principais
 
-| Método | Rota                          | Auth | Descrição                                   |
-|--------|-------------------------------|------|----------------------------------------------|
-| POST   | /api/v1/auth/register         | —    | Criar conta                                  |
-| POST   | /api/v1/auth/login            | —    | Obter token JWT                              |
-| GET    | /api/v1/auth/me               | ✅   | Perfil do usuário                            |
-| POST   | /api/v1/chat                  | ✅   | Conversar (resposta completa)                |
-| POST   | /api/v1/chat/stream           | ✅   | Conversar via SSE (delta/tool/done/error)    |
-| GET/POST/DELETE | /api/v1/memories     | ✅   | Memórias de longo prazo                      |
-| GET    | /api/v1/tasks?status=         | ✅   | Tarefas e planos (progresso)                 |
-| GET    | /api/v1/notes                 | ✅   | Notas                                        |
-| GET    | /health, /health/ready        | —    | Liveness / readiness                         |
-
-### Exemplo de streaming
-
-```bash
-curl -N -X POST http://localhost:8000/api/v1/chat/stream \
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"message": "Me lembre de estudar Python amanhã às 18h"}'
-# data: {"type":"tool","tools":["create_task"]}
-# data: {"type":"delta","text":"Anotado! ..."}
-# data: {"type":"done","conversation_id":"...","model":"...","memories_used":1}
-```
+| Método | Rota                              | Descrição                                  |
+|--------|-----------------------------------|---------------------------------------------|
+| POST   | /api/v1/auth/{register,login}     | Conta e token JWT                           |
+| POST   | /api/v1/chat                      | Conversar (resposta completa)               |
+| POST   | /api/v1/chat/stream               | Conversar via SSE (delta/tool/done/error)   |
+| GET/POST/DELETE | /api/v1/memories         | Memórias (com tipo, uso e confiança)        |
+| GET    | /api/v1/tasks, /api/v1/notes      | Tarefas/planos e notas                      |
+| GET    | /api/v1/permissions               | Permissões efetivas de ferramentas          |
+| PUT    | /api/v1/permissions/{tool_name}   | Conceder/revogar uma ferramenta             |
+| GET    | /health, /health/ready            | Liveness / readiness                        |
 
 ## Qualidade
 
 ```bash
-pytest                            # 56 testes
+pytest              # 84 testes
 ruff check app tests alembic
 mypy
 ```
 
-## Roadmap
+## Preparação para as próximas versões
 
-- **v0.3** — voz (STT/TTS sobre o canal SSE), roteamento de modelo barato para
-  extração/resumo, índice ivfflat no pgvector, ferramentas calendar/files
-  (exigem sandbox do Guardian), CI.
-- **v0.4** — interface avançada e avatar.
+- **v0.4 (voz):** o canal SSE é o transporte do TTS token a token; STT entra
+  como nova rota que desemboca no mesmo `YuiCore.stream_message`; wake word é
+  responsabilidade do cliente.
+- **v0.5 (avatar/visão/desktop):** eventos SSE (`delta`/`tool`/`done`) já
+  carregam o que um avatar precisa para reagir; visão entraria como novo tipo
+  de conteúdo no contrato `ChatMessage`.
+- **Ferramentas sensíveis (arquivos, SO, calendário, apps):** registram
+  `default_allowed=False` e categoria própria — o Permission System já nega
+  até o usuário conceder via API.

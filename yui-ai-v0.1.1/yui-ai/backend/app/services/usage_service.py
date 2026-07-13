@@ -16,6 +16,7 @@ PRICES_PER_MTOK: dict[str, tuple[Decimal, Decimal]] = {
     "claude-sonnet-5": (Decimal("3.00"), Decimal("15.00")),
     "claude-haiku-4-5": (Decimal("1.00"), Decimal("5.00")),
     "claude-opus-4-8": (Decimal("5.00"), Decimal("25.00")),
+    "gpt-4o-mini": (Decimal("0.15"), Decimal("0.60")),
     "gpt-4o": (Decimal("2.50"), Decimal("10.00")),
 }
 

@@ -60,7 +60,7 @@ def _to_anthropic_messages(messages: list[ChatMessage]) -> list[dict[str, Any]]:
 
 
 class ClaudeProvider(LLMProvider):
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, model: str | None = None) -> None:
         if not settings.anthropic_api_key:
             raise LLMError("ANTHROPIC_API_KEY não configurada.")
         # Timeout explícito: sem ele o SDK espera até 10 minutos.
@@ -69,7 +69,7 @@ class ClaudeProvider(LLMProvider):
             timeout=settings.llm_timeout_seconds,
             max_retries=settings.llm_max_retries,
         )
-        self._model = settings.anthropic_model
+        self._model = model or settings.anthropic_model
         self._max_tokens = settings.llm_max_tokens
         self._temperature = settings.llm_temperature
 

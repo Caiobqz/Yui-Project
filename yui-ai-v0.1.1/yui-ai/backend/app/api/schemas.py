@@ -60,11 +60,13 @@ class MemoryCreateRequest(BaseModel):
 
 class MemoryResponse(BaseModel):
     id: uuid.UUID
+    memory_type: str
     category: str
     content: str
     relevance: float
     confidence: float
     source: str
+    usage_count: int
     last_used_at: datetime | None
     created_at: datetime
 
@@ -94,3 +96,20 @@ class NoteResponse(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+# --- Permissões ---------------------------------------------------------------
+
+
+class PermissionResponse(BaseModel):
+    tool_name: str
+    category: str
+    allowed: bool
+    # "default" (política da ferramenta) ou "user" (decisão explícita).
+    source: str
+
+    model_config = {"from_attributes": True}
+
+
+class PermissionUpdateRequest(BaseModel):
+    allowed: bool

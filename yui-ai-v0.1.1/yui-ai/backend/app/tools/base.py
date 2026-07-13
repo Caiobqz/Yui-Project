@@ -37,3 +37,9 @@ ToolHandler = Callable[[ToolContext, dict[str, Any]], Awaitable[str]]
 class Tool:
     spec: ToolSpec
     handler: ToolHandler
+    # Permission System: categoria e autorização default. Ferramentas de
+    # categorias sensíveis (arquivos, sistema operacional, calendário
+    # externo, apps) devem nascer com default_allowed=False — o usuário
+    # concede explicitamente via API de permissões.
+    category: str = "produtividade"
+    default_allowed: bool = True

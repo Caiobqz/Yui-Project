@@ -1,24 +1,27 @@
-"""Yui Core — agente central que entende a intenção e coordena o turno.
+"""Yui Core — orquestra o fluxo cognitivo de cada turno.
 
-Fluxo de cada mensagem:
+Fluxo cognitivo (Reasoning Engine):
 
-    Fase 0 (sem banco)   — rate limit e embedding da consulta.
-    Fase 1 (conexão curta) — resolve a conversa, recupera memórias relevantes
-        (semânticas via MemoryAgent), histórico (com rehidratação) e resumo.
-    Fase 2 (SEM conexão)  — loop agêntico: o modelo recebe as ferramentas e
-        decide agir; o GuardianAgent valida cada chamada e o TaskAgent
-        executa; os resultados voltam ao modelo até a resposta final.
-    Fase 3 (conexão curta) — persiste o turno, registra o uso de cada chamada
-        de modelo e atualiza o cache.
-    Pós-turno (background) — MemoryAgent extrai memórias novas e o
-        ConversationSummarizer compacta conversas longas.
+    Entrada
+      → contexto emocional (heurística, sem custo)
+      → rate limit + embedding da consulta          (fase 0, sem banco)
+      → conversa + memórias relevantes (com decaimento) + modelo do usuário
+        (adaptação/relacionamento) + permissões + curiosidade + histórico
+        (rehidratação) + resumo                     (fase 1, conexão curta)
+      → estratégia → system prompt (CognitiveState)
+      → loop agêntico: LLM ⇄ ferramentas
+        (Guardian valida + permissões; TaskAgent executa)  (fase 2, SEM banco)
+      → persistência do turno + interação + uso     (fase 3, conexão curta)
+      → pós-turno em background (modelo utilitário): TurnAnalyzer propõe
+        memórias (Memory System) e adaptação (Adaptation Engine);
+        manutenção de memória periódica; resumo de conversas longas.
 
 Este módulo não conhece HTTP nem SDKs de IA: apenas coordena serviços/agentes.
 """
 import logging
 import uuid
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from sqlalchemy import func, select
@@ -27,6 +30,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.agents.guardian import GuardianAgent
 from app.agents.memory_agent import MemoryAgent
 from app.agents.task_agent import TaskAgent
+from app.cognition.analyzer import TurnAnalyzer
+from app.cognition.curiosity import CuriosityEngine
+from app.cognition.emotional_context import analyze as analyze_emotional_context
+from app.cognition.reasoning import CognitiveState
+from app.cognition.user_model import UserModelService
 from app.core.background import spawn
 from app.core.config import get_settings
 from app.core.exceptions import ConversationNotFoundError
@@ -37,6 +45,8 @@ from app.services.context_service import build_system_prompt
 from app.services.embeddings.base import EmbeddingProvider
 from app.services.history_service import HistoryService, prepare_for_llm
 from app.services.llm.base import ChatMessage, LLMProvider, LLMResponse
+from app.services.memory_maintenance import MemoryMaintenance
+from app.services.permission_service import PermissionService
 from app.services.rate_limiter import RateLimiter
 from app.services.summary_service import ConversationSummarizer
 from app.services.usage_service import build_usage_record
@@ -64,6 +74,7 @@ class _TurnSetup:
     system_prompt: str
     messages: list[ChatMessage]
     memories_used: int
+    permission_overrides: dict[str, bool] = field(default_factory=dict)
 
 
 class YuiCore:
@@ -75,17 +86,23 @@ class YuiCore:
         rate_limiter: RateLimiter,
         embeddings: EmbeddingProvider | None = None,
         registry: ToolRegistry | None = None,
+        utility_llm: LLMProvider | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._short_term = short_term
         self._history = HistoryService(short_term)
         self._llm = llm
+        # Trabalho cognitivo de bastidor roda num modelo mais barato.
+        self._utility_llm = utility_llm or llm
         self._rate_limiter = rate_limiter
         self._registry = registry or ToolRegistry()
         self._guardian = GuardianAgent()
         self._task_agent = TaskAgent(self._registry)
         self._memory_agent = MemoryAgent(llm, embeddings, session_factory)
-        self._summarizer = ConversationSummarizer(llm, session_factory)
+        self._curiosity = CuriosityEngine()
+        self._analyzer = TurnAnalyzer(self._utility_llm)
+        self._summarizer = ConversationSummarizer(self._utility_llm, session_factory)
+        self._maintenance = MemoryMaintenance(session_factory)
 
     # ------------------------------------------------------------------ turno
 
@@ -115,7 +132,7 @@ class YuiCore:
             if not response.tool_calls:
                 final_text = response.content
                 break
-            await self._handle_tool_calls(ctx, messages, response)
+            await self._handle_tool_calls(ctx, setup, messages, response)
 
         await self._finalize_turn(
             user_id, setup.conversation_id, text, final_text, responses
@@ -170,7 +187,7 @@ class YuiCore:
                 "type": "tool",
                 "tools": [call.name for call in response.tool_calls],
             }
-            await self._handle_tool_calls(ctx, messages, response)
+            await self._handle_tool_calls(ctx, setup, messages, response)
 
         await self._finalize_turn(
             user_id, setup.conversation_id, text, final_text, responses
@@ -193,15 +210,42 @@ class YuiCore:
         user_text: str,
         assistant_text: str,
     ) -> None:
-        """Extração de memórias e compactação de contexto (fora do turno)."""
+        """Análise cognitiva pós-turno (fora do caminho da resposta).
+
+        Uma chamada do modelo utilitário produz memórias candidatas e notas
+        de adaptação; em seguida rodam a manutenção periódica da memória e o
+        resumo de conversas longas. Falhas são logadas, nunca propagadas.
+        """
         settings = get_settings()
+        interaction_count = 0
+
         if settings.memory_extraction_enabled:
             try:
-                await self._memory_agent.extract_from_turn(
-                    user_id, conversation_id, user_text, assistant_text
-                )
+                analysis = await self._analyzer.analyze(user_text, assistant_text)
+                await self._memory_agent.store_candidates(user_id, analysis.memories)
+                async with self._session_factory() as session:
+                    profile = await UserModelService(session).get_or_create(user_id)
+                    if analysis.adaptation:
+                        UserModelService.apply_adaptation(profile, analysis.adaptation)
+                    interaction_count = profile.interaction_count
+                    if analysis.response is not None:
+                        session.add(
+                            build_usage_record(
+                                user_id, conversation_id, analysis.response
+                            )
+                        )
+                    await session.commit()
             except Exception:
-                logger.exception("Extração de memórias falhou (pós-turno).")
+                logger.exception("Análise cognitiva pós-turno falhou.")
+
+            # Manutenção periódica: esquecimento de memórias obsoletas.
+            interval = settings.memory_maintenance_interval
+            if interval > 0 and interaction_count > 0 and interaction_count % interval == 0:
+                try:
+                    await self._maintenance.run(user_id)
+                except Exception:
+                    logger.exception("Manutenção de memória falhou.")
+
         if settings.summarization_enabled:
             try:
                 await self._summarizer.maybe_summarize(user_id, conversation_id)
@@ -233,21 +277,39 @@ class YuiCore:
     ) -> _TurnSetup:
         settings = get_settings()
 
+        # Contexto emocional: heurística pura, sem custo.
+        emotional = analyze_emotional_context(text)
+
         # Fase 0 — embedding da consulta ANTES de abrir a sessão.
         query_embedding = await self._memory_agent.embed_query(text)
 
-        # Fase 1 — leitura de contexto (conexão curta).
+        # Fase 1 — leitura do estado cognitivo (conexão curta).
         async with self._session_factory() as session:
             conversation = await self._resolve_conversation(
                 session, user_id, conversation_id
             )
             resolved_id = conversation.id
             summary = conversation.summary
+
+            profile = await UserModelService(session).get_or_create(user_id)
+            adaptation_notes = list(profile.preferences or [])
+            relationship = UserModelService.relationship_line(profile)
+            permission_overrides = await PermissionService(session).overrides(user_id)
             memories = await self._memory_agent.retrieve(
                 session, user_id, text, query_embedding
             )
+            curiosity = await self._curiosity.suggest(session, user_id, profile)
             history = await self._history.load(session, resolved_id)
-            system_prompt = build_system_prompt(memories, summary)
+
+            state = CognitiveState(
+                memories=memories,
+                summary=summary,
+                adaptation_notes=adaptation_notes,
+                relationship=relationship,
+                emotional=emotional,
+                curiosity=curiosity,
+            )
+            system_prompt = build_system_prompt(state)
             memories_used = len(memories)
             await session.commit()
 
@@ -260,6 +322,7 @@ class YuiCore:
             system_prompt=system_prompt,
             messages=messages,
             memories_used=memories_used,
+            permission_overrides=permission_overrides,
         )
 
     def _tool_context(
@@ -275,10 +338,12 @@ class YuiCore:
     async def _handle_tool_calls(
         self,
         ctx: ToolContext,
+        setup: _TurnSetup,
         messages: list[ChatMessage],
         response: LLMResponse,
     ) -> None:
-        """Valida (Guardian), executa (TaskAgent) e devolve resultados ao modelo."""
+        """Valida (Guardian + permissões), executa (TaskAgent) e devolve
+        os resultados ao modelo."""
         messages.append(
             ChatMessage(
                 role="assistant",
@@ -287,7 +352,9 @@ class YuiCore:
             )
         )
         for call in response.tool_calls:
-            error = self._guardian.validate_tool_call(self._registry, call)
+            error = self._guardian.validate_tool_call(
+                self._registry, call, setup.permission_overrides
+            )
             result = error if error is not None else await self._task_agent.execute(ctx, call)
             messages.append(
                 ChatMessage(
@@ -310,6 +377,9 @@ class YuiCore:
             await self._persist_turn(
                 session, user_id, conversation_id, user_text, assistant_text, responses
             )
+            # Relationship Model: registra a interação.
+            profile = await UserModelService(session).get_or_create(user_id)
+            UserModelService.register_interaction(profile)
             await session.commit()
 
         # Cache de curto prazo (par gravado atomicamente) e contador de tokens.

@@ -78,7 +78,7 @@ def _to_openai_tools(tools: list[ToolSpec]) -> list[dict[str, Any]]:
 
 
 class OpenAIProvider(LLMProvider):
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, model: str | None = None) -> None:
         if not settings.openai_api_key:
             raise LLMError("OPENAI_API_KEY não configurada.")
         self._client = AsyncOpenAI(
@@ -86,7 +86,7 @@ class OpenAIProvider(LLMProvider):
             timeout=settings.llm_timeout_seconds,
             max_retries=settings.llm_max_retries,
         )
-        self._model = settings.openai_model
+        self._model = model or settings.openai_model
         self._max_tokens = settings.llm_max_tokens
         self._temperature = settings.llm_temperature
 

@@ -1,72 +1,31 @@
-"""Memory Agent — cria, recupera e deduplica memórias sobre o usuário.
+"""Memory Agent — cria, recupera, consolida e deduplica memórias.
 
 Criação por dois caminhos:
-- `remember` — pedido explícito (ferramenta save_memory);
-- `extract_from_turn` — extração automática pós-turno: um LLM analisa o par
-  usuário/assistente e propõe memórias com categoria, importância e
-  confiança; o Guardian faz a triagem e a deduplicação usa embeddings.
+- `remember` — pedido explícito (ferramenta save_memory ou API);
+- `store_candidates` — candidatas propostas pelo TurnAnalyzer no pós-turno.
+
+Consolidação: quando uma candidata equivale a uma memória existente
+(similaridade de embedding ou lexical), a existente é REFORÇADA
+(usage_count, confiança, recência) em vez de duplicada — informações
+reconfirmadas ficam mais fortes; as demais decaem (ver memory_service).
 
 Recuperação: semântica (embeddings) quando disponível, lexical como
-fallback. Memórias usadas numa resposta têm `last_used_at` atualizado.
+fallback; memórias usadas têm recência e frequência atualizadas.
 """
-import json
 import logging
-import re
 import uuid
-from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.agents.guardian import GuardianAgent
+from app.cognition.analyzer import MemoryCandidate
 from app.core.config import get_settings
 from app.models.memory import MemoryEntry
 from app.services.embeddings.base import EmbeddingProvider
-from app.services.llm.base import ChatMessage, LLMProvider
+from app.services.llm.base import LLMProvider
 from app.services.memory_service import MemoryService
-from app.services.usage_service import build_usage_record
 
 logger = logging.getLogger("yui.memory_agent")
-
-_EXTRACTION_SYSTEM_PROMPT = """Você é o componente de memória da Yui, uma assistente pessoal.
-Analise o turno de conversa e extraia APENAS informações duráveis e importantes \
-sobre o usuário: objetivos, preferências, interesses, conhecimentos e hábitos relevantes.
-
-NÃO extraia: saudações, pedidos pontuais, opiniões da assistente, trivialidades, \
-nem dados sensíveis (senhas, tokens, documentos, dados financeiros).
-
-Responda SOMENTE com JSON válido, sem texto adicional, no formato:
-{"memories": [{"content": "...", "category": "...", "importance": 0.0, "confidence": 0.0}]}
-
-- content: frase curta e autossuficiente sobre o usuário (ex.: "Quer trabalhar com IA").
-- category: uma palavra (ex.: objetivos, preferencias, interesses, habitos, conhecimento).
-- importance e confidence: números entre 0 e 1.
-Se não houver nada que valha a pena lembrar: {"memories": []}"""
-
-_JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
-
-
-def _parse_extraction(text: str) -> list[dict[str, Any]]:
-    """Extrai a lista de memórias do JSON retornado pelo modelo (tolerante)."""
-    candidate = text.strip()
-    fence = _JSON_FENCE_RE.search(candidate)
-    if fence:
-        candidate = fence.group(1)
-    try:
-        data = json.loads(candidate)
-    except json.JSONDecodeError:
-        logger.debug("Extração de memória: resposta não é JSON válido.")
-        return []
-    memories = data.get("memories") if isinstance(data, dict) else None
-    if not isinstance(memories, list):
-        return []
-    return [m for m in memories if isinstance(m, dict)]
-
-
-def _clamp(value: Any, default: float) -> float:
-    try:
-        return max(0.0, min(1.0, float(value)))
-    except (TypeError, ValueError):
-        return default
 
 
 class MemoryAgent:
@@ -118,7 +77,7 @@ class MemoryAgent:
         await service.touch(entries)
         return entries
 
-    # --- Criação explícita ---------------------------------------------------------
+    # --- Criação e consolidação -----------------------------------------------------
 
     async def remember(
         self,
@@ -128,12 +87,65 @@ class MemoryAgent:
         importance: float = 0.7,
         confidence: float = 1.0,
         source: str = "user",
+        memory_type: str = "semantic",
     ) -> MemoryEntry | None:
-        """Salva uma memória com triagem e deduplicação. None se rejeitada."""
+        """Salva (ou reforça) uma memória. None se rejeitada pelo Guardian."""
+        entry, _created = await self._store(
+            user_id,
+            content=content,
+            category=category,
+            importance=importance,
+            confidence=confidence,
+            source=source,
+            memory_type=memory_type,
+        )
+        return entry
+
+    async def store_candidates(
+        self, user_id: uuid.UUID, candidates: list[MemoryCandidate]
+    ) -> int:
+        """Persiste candidatas do TurnAnalyzer. Retorna quantas são NOVAS.
+
+        Candidatas equivalentes a memórias existentes reforçam a existente
+        (consolidação) e não contam como novas.
+        """
+        settings = get_settings()
+        created_count = 0
+        for candidate in candidates:
+            if candidate.confidence < settings.memory_min_confidence:
+                continue
+            _entry, created = await self._store(
+                user_id,
+                content=candidate.content,
+                category=candidate.category,
+                importance=candidate.importance,
+                confidence=candidate.confidence,
+                source="extracted",
+                memory_type=candidate.memory_type,
+            )
+            if created:
+                created_count += 1
+        if created_count:
+            logger.info(
+                "Memória: %d nova(s) para o usuário %s.", created_count, user_id
+            )
+        return created_count
+
+    async def _store(
+        self,
+        user_id: uuid.UUID,
+        content: str,
+        category: str,
+        importance: float,
+        confidence: float,
+        source: str,
+        memory_type: str,
+    ) -> tuple[MemoryEntry | None, bool]:
+        """Retorna (memória criada/reforçada ou None, foi_criada)."""
         rejection = self._guardian.screen_memory_content(content)
         if rejection is not None:
             logger.info("Memória rejeitada pelo Guardian: %s.", rejection)
-            return None
+            return None, False
 
         vectors = await self.embed_texts([content])
         embedding = vectors[0] if vectors else None
@@ -142,8 +154,10 @@ class MemoryAgent:
             service = MemoryService(session)
             duplicate = await service.find_duplicate(user_id, content, embedding)
             if duplicate is not None:
-                logger.info("Memória duplicada ignorada (existente %s).", duplicate.id)
-                return None
+                service.reinforce(duplicate, confidence)
+                await session.commit()
+                logger.debug("Memória consolidada (reforço em %s).", duplicate.id)
+                return duplicate, False
             entry = await service.create(
                 user_id,
                 category=category,
@@ -151,52 +165,8 @@ class MemoryAgent:
                 relevance=importance,
                 confidence=confidence,
                 source=source,
+                memory_type=memory_type,
                 embedding=embedding,
             )
             await session.commit()
-            return entry
-
-    # --- Extração automática pós-turno ---------------------------------------------
-
-    async def extract_from_turn(
-        self,
-        user_id: uuid.UUID,
-        conversation_id: uuid.UUID,
-        user_text: str,
-        assistant_text: str,
-    ) -> int:
-        """Analisa o turno e salva memórias novas. Retorna quantas salvou."""
-        settings = get_settings()
-        turn = f"Usuário: {user_text}\nYui: {assistant_text}"
-        response = await self._llm.generate(
-            _EXTRACTION_SYSTEM_PROMPT,
-            [ChatMessage(role="user", content=turn)],
-        )
-
-        saved = 0
-        for candidate in _parse_extraction(response.content):
-            content = str(candidate.get("content") or "").strip()
-            confidence = _clamp(candidate.get("confidence"), default=0.0)
-            if not content or confidence < settings.memory_min_confidence:
-                continue
-            entry = await self.remember(
-                user_id,
-                content=content,
-                category=str(candidate.get("category") or "geral")[:64],
-                importance=_clamp(candidate.get("importance"), default=0.5),
-                confidence=confidence,
-                source="extracted",
-            )
-            if entry is not None:
-                saved += 1
-
-        # Contabiliza a chamada de extração (custo real, mesmo sem memórias).
-        async with self._session_factory() as session:
-            session.add(build_usage_record(user_id, conversation_id, response))
-            await session.commit()
-
-        if saved:
-            logger.info(
-                "Extração: %d memória(s) nova(s) para o usuário %s.", saved, user_id
-            )
-        return saved
+            return entry, True

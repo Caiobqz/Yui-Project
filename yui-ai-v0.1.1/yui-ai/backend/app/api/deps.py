@@ -14,7 +14,7 @@ from app.database.session import async_session_factory, get_db_session
 from app.memory.short_term import ShortTermMemory
 from app.models.user import User
 from app.services.embeddings.factory import get_embedding_provider
-from app.services.llm.factory import get_llm_provider
+from app.services.llm.factory import get_llm_provider, get_utility_llm_provider
 from app.services.rate_limiter import RateLimiter
 from app.tools.registry import build_default_registry
 
@@ -71,6 +71,7 @@ async def get_yui_core() -> YuiCore:
         rate_limiter=RateLimiter(redis),
         embeddings=get_embedding_provider(),
         registry=build_default_registry(),
+        utility_llm=get_utility_llm_provider(),
     )
 
 

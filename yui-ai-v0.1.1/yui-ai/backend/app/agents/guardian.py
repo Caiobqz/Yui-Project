@@ -27,12 +27,26 @@ _MAX_MEMORY_CHARS = 1000
 
 class GuardianAgent:
     def validate_tool_call(
-        self, registry: ToolRegistry, call: ToolCall
+        self,
+        registry: ToolRegistry,
+        call: ToolCall,
+        permission_overrides: dict[str, bool] | None = None,
     ) -> str | None:
-        """Retorna a mensagem de erro (devolvida ao modelo) ou None se válida."""
+        """Retorna a mensagem de erro (devolvida ao modelo) ou None se válida.
+
+        Além de existência e argumentos, aplica o Permission System:
+        decisão explícita do usuário > default da ferramenta.
+        """
         tool = registry.get(call.name)
         if tool is None:
             return f"Ferramenta desconhecida: '{call.name}'. Ela não está autorizada."
+        overrides = permission_overrides or {}
+        if not overrides.get(call.name, tool.default_allowed):
+            return (
+                f"A ferramenta '{call.name}' não está autorizada para este "
+                "usuário. Informe que ele pode conceder a permissão nas "
+                "configurações de permissões."
+            )
         if not isinstance(call.arguments, dict):
             return "Argumentos inválidos: esperado um objeto JSON."
         required = tool.spec.input_schema.get("required", [])

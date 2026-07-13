@@ -74,5 +74,51 @@ class PlannerAgent:
             f"Plano criado: '{parent.title}' (id {parent.id})\n"
             f"{lines}\n"
             "As etapas foram salvas como tarefas e podem ser acompanhadas "
-            "com list_tasks e concluídas com complete_task."
+            "com get_plan_progress e concluídas com complete_task."
+        )
+
+    async def review_plan(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        user_id: uuid.UUID,
+        conversation_id: uuid.UUID,
+        plan_id: uuid.UUID,
+    ) -> str:
+        """Revisa um plano: progresso atual + sugestões de ajuste (LLM)."""
+        async with session_factory() as session:
+            plan = await TaskService(session).get_plan(user_id, plan_id)
+            if plan is None:
+                return "Plano não encontrado."
+            parent, children = plan
+            done, total = TaskService.progress(children)
+            snapshot = "\n".join(
+                f"{t.position}. [{'x' if t.status == 'done' else ' '}] {t.title}"
+                for t in children
+            )
+
+        # Chamada ao modelo SEM conexão de banco aberta.
+        response = await self._llm.generate(
+            (
+                "Você é o componente de planejamento da Yui. Avalie o progresso "
+                "do plano e sugira, em no máximo 4 frases, ajustes práticos: "
+                "próxima etapa a atacar, etapas que podem ser divididas ou "
+                "removidas, e um incentivo honesto."
+            ),
+            [
+                ChatMessage(
+                    role="user",
+                    content=(
+                        f"Plano: {parent.title}\n"
+                        f"Progresso: {done}/{total} etapas concluídas.\n"
+                        f"Etapas:\n{snapshot}"
+                    ),
+                )
+            ],
+        )
+        async with session_factory() as session:
+            session.add(build_usage_record(user_id, conversation_id, response))
+            await session.commit()
+        return (
+            f"Plano '{parent.title}': {done}/{total} etapas concluídas.\n"
+            f"{response.content.strip()}"
         )
