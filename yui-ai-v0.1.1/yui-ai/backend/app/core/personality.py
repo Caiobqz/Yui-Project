@@ -1,4 +1,11 @@
-"""Carregamento e validação da personalidade da Yui a partir de YAML."""
+"""Personality Engine — traços e estilo de conversa, carregados de YAML.
+
+Separação do núcleo cognitivo:
+- QUEM a Yui é (identidade imutável) → app/cognition/identity.py (código).
+- COMO a Yui conversa (traços/estilo, configurável) → este módulo (YAML).
+- Como conversar com CADA usuário (aprendido) → Adaptation Engine
+  (app/cognition/user_model.py).
+"""
 from functools import lru_cache
 from pathlib import Path
 
@@ -9,28 +16,24 @@ from app.core.config import get_settings
 
 
 class Personality(BaseModel):
-    """Representação validada da personalidade configurável."""
+    """Traços de personalidade e estilo de comunicação configuráveis."""
 
-    name: str
-    role: str
-    objective: str
+    traits: dict[str, str] = Field(default_factory=dict)
     communication_style: list[str] = Field(default_factory=list)
-    behavior_rules: list[str] = Field(default_factory=list)
-    limitations: list[str] = Field(default_factory=list)
 
-    def to_system_prompt(self) -> str:
-        """Converte a personalidade em um bloco de instruções para o LLM."""
-
-        def bullets(items: list[str]) -> str:
-            return "\n".join(f"- {item}" for item in items)
-
-        return (
-            f"Você é {self.name}, {self.role}.\n\n"
-            f"Objetivo:\n{self.objective.strip()}\n\n"
-            f"Estilo de comunicação:\n{bullets(self.communication_style)}\n\n"
-            f"Regras de comportamento:\n{bullets(self.behavior_rules)}\n\n"
-            f"Limitações:\n{bullets(self.limitations)}"
-        )
+    def to_style_prompt(self) -> str:
+        """Bloco de personalidade/estilo do system prompt."""
+        parts: list[str] = []
+        if self.traits:
+            lines = "\n".join(
+                f"- {name.capitalize()}: {description.strip()}"
+                for name, description in self.traits.items()
+            )
+            parts.append(f"Traços de personalidade:\n{lines}")
+        if self.communication_style:
+            lines = "\n".join(f"- {item}" for item in self.communication_style)
+            parts.append(f"Estilo de comunicação:\n{lines}")
+        return "\n\n".join(parts)
 
 
 class PersonalityLoadError(RuntimeError):

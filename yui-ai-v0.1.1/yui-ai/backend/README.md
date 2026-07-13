@@ -1,133 +1,106 @@
-# Yui AI Assistant — v0.1.2
+# Yui AI Assistant — v0.3 (Cognitive Core)
 
-Backend da Yui: assistente pessoal de IA com usuários autenticados, memória
-confiável (Redis como cache + PostgreSQL como fonte de verdade), personalidade
-configurável e camada abstrata de modelos de linguagem (Claude / OpenAI).
+Backend da Yui: inteligência pessoal com identidade permanente, memória
+hierárquica com consolidação e esquecimento, adaptação por usuário,
+curiosidade funcional, contexto emocional, agentes, ferramentas com sistema
+de permissões e streaming.
 
-## Arquitetura
+**Realismo:** a Yui não possui consciência, emoções reais nem vontade
+própria. Todos os comportamentos do núcleo cognitivo são modelos
+computacionais de interação — e a própria identidade declara isso ao modelo.
+
+## Yui Cognitive Core
 
 ```
-app/
-  core/        Configurações (fail-fast), segurança (JWT/bcrypt), personalidade, exceções
-  agents/      Yui Core — orquestra cada turno em 3 fases (contexto → LLM → persistência)
-  memory/      Memória de curto prazo (Redis, cache)
-  models/      SQLAlchemy: users, conversations, messages, memórias, uso
-  services/    LLM (abstração + provedores), memórias, histórico (rehidratação),
-               contexto, rate limiting, contabilidade de uso
-  api/         Rotas HTTP, schemas e dependências (auth via Bearer token)
-  database/    Sessão async do PostgreSQL (pool configurável) e cliente Redis
-alembic/       Migrations versionadas (fonte de verdade do schema em produção)
-tests/         Unitários + integração de API (SQLite em memória, dublês de Redis/LLM)
+Yui Cognitive Core
+  ├── Identity System        cognition/identity.py — imutável, em código
+  ├── Memory System          working (Redis+resumo) | semantic | episodic |
+  │                          procedural | relationship; consolidação por
+  │                          reforço, decaimento por meia-vida, poda
+  ├── Personality Engine     traços/estilo (YAML) — QUEM é ≠ COMO conversa
+  ├── Reasoning Engine       cognition/reasoning.py — sinais → estratégia
+  ├── Curiosity Engine       lacunas (objetivos desconhecidos, planos parados)
+  │                          → no máximo 1 pergunta sugerida por turno
+  ├── Adaptation Engine      notas aprendidas por usuário ("prefere exemplos
+  │                          práticos"), com dedupe e teto
+  ├── Emotional Context      heurística: frustração/dificuldade/pressa/
+  │                          motivação → modula tom e complexidade
+  ├── Planning System        criar, acompanhar (get_plan_progress) e revisar
+  │                          (review_plan) objetivos
+  ├── Action System          ferramentas validadas pelo Guardian
+  └── Permission System      autorização por usuário/ferramenta; categorias
+                             sensíveis futuras nascem negadas
 ```
 
-Fluxo de uma mensagem: API (usuário do token) → YuiCore → *fase 1:* conversa +
-memórias + histórico (Redis, com rehidratação do PostgreSQL) → *fase 2:*
-personalidade (estável) + memórias delimitadas → LLMProvider **sem conexão de
-banco aberta** → *fase 3:* persistência com `sequence` determinística +
-registro de tokens/custo → cache atualizado.
+### Fluxo cognitivo de um turno
 
-## Segurança
+```
+Entrada → contexto emocional (heurística)
+        → memórias relevantes (similaridade × importância × recência)
+        → modelo do usuário (adaptação + relacionamento) + permissões
+        → curiosidade (lacunas) → estratégia → system prompt
+        → LLM ⇄ ferramentas (Guardian + permissões; TaskAgent executa)
+        → persistência + interação registrada
+Pós-turno (modelo utilitário barato, em background):
+        TurnAnalyzer → memórias tipadas + notas de adaptação
+        → manutenção periódica (esquecimento) → resumo de conversas longas
+```
 
-- **Autenticação JWT** — o usuário é identificado exclusivamente pelo token;
-  nenhuma rota aceita `user_id` do cliente.
-- **Isolamento** — conversas e memórias têm FK para `users`; acessos cruzados
-  respondem 404 sem revelar existência.
-- **Rate limiting** — mensagens/minuto e orçamento diário de tokens por
-  usuário (Redis), com limites por plano preparados para expansão.
-- **Prompt injection** — memórias entram no prompt delimitadas como dados.
-- **Erros** — detalhes ficam no log; o cliente recebe mensagens genéricas.
+### Memória hierárquica
 
-## Requisitos
+| Camada | Onde | Exemplo |
+|---|---|---|
+| Working | Redis + `conversations.summary` | contexto atual |
+| Semantic | `memory_entries` (type=semantic) | "gosta de programação" |
+| Episodic | type=episodic (meia-vida 30d) | "terminou o projeto X" |
+| Procedural | type=procedural | "prefere commits pequenos" |
+| Relationship | type=relationship + `user_profiles` | marcos e continuidade |
 
-- Python 3.11+
-- Docker (para PostgreSQL e Redis) ou instâncias locais
+Cada memória tem importância, confiança, origem, data, frequência de uso e
+última utilização. Reconfirmações **reforçam** a memória existente
+(consolidação); memórias extraídas, nunca usadas e irrelevantes são
+**podadas** — as criadas pelo usuário, nunca.
 
 ## Executando localmente
 
 ```bash
-# 1. Infraestrutura (PostgreSQL com pgvector + Redis com AOF)
 docker compose up -d
-
-# 2. Ambiente Python
-python -m venv .venv
-source .venv/bin/activate        # Windows: .venv\Scripts\activate
+python -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
-
-# 3. Configuração
-cp .env.example .env
-# edite .env: ANTHROPIC_API_KEY (ou OPENAI_API_KEY) e, fora de development,
-# JWT_SECRET_KEY. A aplicação NÃO SOBE com configuração essencial ausente.
-
-# 4. Schema do banco
+cp .env.example .env                      # ANTHROPIC_API_KEY etc.
 alembic upgrade head
-
-# 5. Subir a API
-uvicorn app.main:app --reload
+uvicorn app.main:app --reload             # docs em http://localhost:8000/docs
 ```
-
-API completa em container: `docker compose --profile app up --build`.
-
-Documentação interativa: http://localhost:8000/docs
 
 ## Endpoints principais
 
-| Método | Rota                          | Auth | Descrição                              |
-|--------|-------------------------------|------|----------------------------------------|
-| POST   | /api/v1/auth/register         | —    | Criar conta                            |
-| POST   | /api/v1/auth/login            | —    | Obter token JWT                        |
-| GET    | /api/v1/auth/me               | ✅   | Perfil do usuário autenticado          |
-| POST   | /api/v1/chat                  | ✅   | Conversar com a Yui                    |
-| POST   | /api/v1/memories              | ✅   | Salvar memória de longo prazo          |
-| GET    | /api/v1/memories              | ✅   | Listar memórias próprias               |
-| DELETE | /api/v1/memories/{memory_id}  | ✅   | Apagar memória própria                 |
-| GET    | /health                       | —    | Liveness (processo vivo)               |
-| GET    | /health/ready                 | —    | Readiness (503 se Postgres/Redis fora) |
-
-### Exemplo
-
-```bash
-curl -s -X POST http://localhost:8000/api/v1/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{"email": "leo@example.com", "password": "senha-segura-1", "name": "Leo"}'
-
-TOKEN=$(curl -s -X POST http://localhost:8000/api/v1/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email": "leo@example.com", "password": "senha-segura-1"}' | jq -r .access_token)
-
-curl -s -X POST http://localhost:8000/api/v1/chat \
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"message": "O que você sabe sobre meus estudos?"}'
-```
-
-## Personalidade
-
-Editável em `app/config/personality.yaml` (nome, objetivo, estilo, regras e
-limitações). Validada no boot — YAML inválido impede o start. O caminho é
-resolvido relativo à raiz do backend, independente do CWD.
-
-## Migrations
-
-```bash
-alembic upgrade head                                  # aplicar
-alembic revision --autogenerate -m "descrição"        # criar nova
-```
-
-Em desenvolvimento, `Base.metadata.create_all` roda no startup por
-conveniência; produção usa exclusivamente as migrations.
+| Método | Rota                              | Descrição                                  |
+|--------|-----------------------------------|---------------------------------------------|
+| POST   | /api/v1/auth/{register,login}     | Conta e token JWT                           |
+| POST   | /api/v1/chat                      | Conversar (resposta completa)               |
+| POST   | /api/v1/chat/stream               | Conversar via SSE (delta/tool/done/error)   |
+| GET/POST/DELETE | /api/v1/memories         | Memórias (com tipo, uso e confiança)        |
+| GET    | /api/v1/tasks, /api/v1/notes      | Tarefas/planos e notas                      |
+| GET    | /api/v1/permissions               | Permissões efetivas de ferramentas          |
+| PUT    | /api/v1/permissions/{tool_name}   | Conceder/revogar uma ferramenta             |
+| GET    | /health, /health/ready            | Liveness / readiness                        |
 
 ## Qualidade
 
 ```bash
-pytest              # testes (unitários + integração de API)
+pytest              # 84 testes
 ruff check app tests alembic
 mypy
 ```
 
-## Roadmap
+## Preparação para as próximas versões
 
-- **v0.2** — embeddings + pgvector, RAG, extração automática de memórias
-  (ponto de troca: `MemoryService.retrieve_relevant`, sem mudança de contrato),
-  streaming SSE (ponto de extensão: `LLMProvider.generate_stream`), CI.
-- **v0.3** — tool use no contrato do provider, agentes (Memory/Guardian),
-  voz (STT/TTS).
-- **v0.4** — interface avançada e avatar.
+- **v0.4 (voz):** o canal SSE é o transporte do TTS token a token; STT entra
+  como nova rota que desemboca no mesmo `YuiCore.stream_message`; wake word é
+  responsabilidade do cliente.
+- **v0.5 (avatar/visão/desktop):** eventos SSE (`delta`/`tool`/`done`) já
+  carregam o que um avatar precisa para reagir; visão entraria como novo tipo
+  de conteúdo no contrato `ChatMessage`.
+- **Ferramentas sensíveis (arquivos, SO, calendário, apps):** registram
+  `default_allowed=False` e categoria própria — o Permission System já nega
+  até o usuário conceder via API.

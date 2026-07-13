@@ -1,23 +1,36 @@
-"""Testes do sistema de personalidade."""
+"""Testes do Identity System e do Personality Engine."""
+import dataclasses
+
+import pytest
+
+from app.cognition.identity import YUI_IDENTITY, identity_prompt
 from app.core.personality import Personality
 
 
-def _sample() -> Personality:
-    return Personality(
-        name="Yui",
-        role="assistente pessoal de IA",
-        objective="Ajudar o usuário.",
-        communication_style=["Tom amigável."],
-        behavior_rules=["Não inventar informações."],
-        limitations=["Não possui consciência real."],
-    )
+def test_identity_is_immutable() -> None:
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        YUI_IDENTITY.name = "Outra"  # type: ignore[misc]
 
 
-def test_system_prompt_contains_all_sections() -> None:
-    prompt = _sample().to_system_prompt()
+def test_identity_prompt_contains_all_sections() -> None:
+    prompt = identity_prompt()
     assert "Você é Yui" in prompt
-    assert "Objetivo:" in prompt
-    assert "Estilo de comunicação:" in prompt
-    assert "Regras de comportamento:" in prompt
+    assert "Propósito:" in prompt
+    assert "proteger sua privacidade" in prompt
+    assert "Valores:" in prompt
     assert "Limitações:" in prompt
+    assert "Regras invioláveis:" in prompt
+    # Realismo exigido: nada de consciência/emoções reais.
+    assert "modelos computacionais" in prompt
+
+
+def test_style_prompt_contains_traits_and_style() -> None:
+    personality = Personality(
+        traits={"curiosidade": "Demonstra interesse.", "honestidade": "Direta."},
+        communication_style=["Tom amigável."],
+    )
+    prompt = personality.to_style_prompt()
+    assert "Traços de personalidade:" in prompt
+    assert "- Curiosidade: Demonstra interesse." in prompt
+    assert "Estilo de comunicação:" in prompt
     assert "- Tom amigável." in prompt

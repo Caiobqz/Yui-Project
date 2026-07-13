@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     )
 
     app_name: str = "Yui AI Assistant"
-    version: str = "0.1.2"
+    version: str = "0.3.0"
     environment: str = "development"
     api_v1_prefix: str = "/api/v1"
 
@@ -52,6 +52,10 @@ class Settings(BaseSettings):
     anthropic_model: str = "claude-sonnet-4-6"
     openai_api_key: str | None = None
     openai_model: str = "gpt-4o"
+    # Modelo utilitário: trabalho cognitivo de bastidor (extração de
+    # memórias, adaptação, resumo) roda num modelo mais barato.
+    anthropic_utility_model: str = "claude-haiku-4-5"
+    openai_utility_model: str = "gpt-4o-mini"
     llm_max_tokens: int = 1024
     llm_temperature: float = 0.7
     llm_timeout_seconds: float = 60.0
@@ -59,6 +63,42 @@ class Settings(BaseSettings):
     # Orçamento do histórico enviado ao modelo, em caracteres
     # (aproximação: ~4 caracteres por token).
     llm_max_history_chars: int = 24_000
+    # Máximo de iterações do loop de ferramentas por turno.
+    llm_max_tool_iterations: int = 5
+
+    # Embeddings / memória semântica (RAG)
+    # "disabled" mantém a busca lexical — a Yui funciona sem chave da OpenAI.
+    embedding_provider: str = "disabled"  # openai | disabled
+    embedding_model: str = "text-embedding-3-small"
+    # Similaridade de cosseno mínima para considerar uma memória relevante.
+    memory_similarity_threshold: float = 0.35
+    # Acima deste valor, uma memória nova é considerada duplicata.
+    memory_duplicate_threshold: float = 0.90
+
+    # Extração automática de memórias (pós-turno, em background)
+    memory_extraction_enabled: bool = True
+    memory_min_confidence: float = 0.6
+
+    # Resumo automático de conversas longas (pós-turno, em background)
+    summarization_enabled: bool = True
+
+    # Núcleo cognitivo (v0.3)
+    # Curiosity Engine: sugere no máximo 1 pergunta quando detecta lacunas.
+    curiosity_enabled: bool = True
+    curiosity_min_interactions: int = 3
+    # Planos sem progresso há N dias despertam curiosidade.
+    plan_stale_days: int = 7
+    # Adaptation Engine: teto de notas aprendidas por usuário.
+    adaptation_max_notes: int = 12
+    # Manutenção de memória: roda a cada N interações do usuário.
+    memory_maintenance_interval: int = 20
+    # Poda: memórias extraídas, nunca usadas, mais velhas que N dias e com
+    # pontuação (importância × recência) abaixo do limiar são removidas.
+    memory_prune_min_age_days: int = 30
+    memory_prune_score_threshold: float = 0.15
+
+    # Ferramentas
+    web_search_enabled: bool = False
 
     # Memória
     short_term_max_messages: int = 20
@@ -103,6 +143,11 @@ class Settings(BaseSettings):
         if self.llm_provider.lower() not in {"claude", "openai"}:
             errors.append(
                 f"LLM_PROVIDER inválido: '{self.llm_provider}'. Aceitos: 'claude', 'openai'."
+            )
+        if self.embedding_provider.lower() not in {"openai", "disabled"}:
+            errors.append(
+                f"EMBEDDING_PROVIDER inválido: '{self.embedding_provider}'. "
+                "Aceitos: 'openai', 'disabled'."
             )
         if not self.is_development:
             if self.jwt_secret_key == _DEV_JWT_SECRET or len(self.jwt_secret_key) < 32:

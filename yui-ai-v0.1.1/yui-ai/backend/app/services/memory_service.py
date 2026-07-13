@@ -1,23 +1,53 @@
-"""Memória de longo prazo: informações autorizadas pelo usuário (PostgreSQL).
+"""Memória de longo prazo: persistência e recuperação (lexical e semântica).
 
-Na v0.1.x a recuperação usa sobreposição lexical simples ponderada pela
-relevância da memória. A assinatura de `retrieve_relevant` foi desenhada
-para que a v0.2 troque a implementação por embeddings + busca vetorial
-(pgvector) sem alterar quem consome o serviço.
+Duas estratégias de recuperação:
+- `retrieve_semantic` — similaridade de cosseno sobre embeddings. No
+  PostgreSQL usa o operador nativo do pgvector (`<=>`); em outros dialetos
+  (SQLite nos testes) calcula em Python.
+- `retrieve_relevant` — sobreposição lexical, usada como fallback quando
+  embeddings estão desabilitados ou a memória não tem vetor.
 
-Nota de escala: carrega todas as memórias do usuário para pontuar em
-memória. Aceitável para volumes pessoais; a busca vetorial da v0.2 move o
-ranking para o banco.
+O ranking combina similaridade, importância (`relevance`) e RECÊNCIA: a
+"relevância atual" de uma memória decai com o tempo desde o último uso,
+com meia-vida por tipo (episódica decai rápido; semântica, devagar). Um
+piso garante que memórias antigas continuem encontráveis.
 """
+import math
 import re
 import unicodedata
 import uuid
+from datetime import datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
+from app.models.base import ensure_aware, utcnow
 from app.models.memory import MemoryEntry
+from app.services.embeddings.base import cosine_similarity
+
+# Meia-vida do decaimento, em dias, por tipo de memória.
+_HALF_LIFE_DAYS: dict[str, float] = {
+    "episodic": 30.0,
+    "relationship": 180.0,
+    "procedural": 365.0,
+    "semantic": 365.0,
+}
+_RECENCY_FLOOR = 0.3
+
+
+def recency_factor(memory: MemoryEntry, now: datetime | None = None) -> float:
+    """Fator de recência (piso.. 1.0) baseado no último uso da memória."""
+    now = now or utcnow()
+    reference = ensure_aware(memory.last_used_at or memory.created_at)
+    age_days = max(0.0, (now - reference).total_seconds() / 86_400)
+    half_life = _HALF_LIFE_DAYS.get(memory.memory_type, 365.0)
+    return max(_RECENCY_FLOOR, math.pow(0.5, age_days / half_life))
+
+
+def memory_score(similarity: float, memory: MemoryEntry) -> float:
+    """Relevância atual: similaridade × importância × recência."""
+    return similarity * (0.5 + memory.relevance) * recency_factor(memory)
 
 _WORD_RE = re.compile(r"\w+", re.UNICODE)
 _MIN_TOKEN_LENGTH = 3  # tokens menores raramente carregam significado
@@ -41,10 +71,18 @@ def _normalize(text: str) -> set[str]:
     }
 
 
+def _lexical_overlap(a: str, b: str) -> float:
+    """Similaridade de Jaccard entre os conjuntos de tokens normalizados."""
+    ta, tb = _normalize(a), _normalize(b)
+    if not ta or not tb:
+        return 0.0
+    return len(ta & tb) / len(ta | tb)
+
+
 class MemoryService:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
-        self._retrieval_limit = get_settings().memory_retrieval_limit
+        self._settings = get_settings()
 
     async def create(
         self,
@@ -52,16 +90,35 @@ class MemoryService:
         category: str,
         content: str,
         relevance: float = 0.5,
+        confidence: float = 1.0,
+        source: str = "user",
+        memory_type: str = "semantic",
+        embedding: list[float] | None = None,
     ) -> MemoryEntry:
         entry = MemoryEntry(
             user_id=user_id,
             category=category,
             content=content,
             relevance=max(0.0, min(1.0, relevance)),
+            confidence=max(0.0, min(1.0, confidence)),
+            source=source,
+            memory_type=memory_type,
+            embedding=embedding,
         )
         self._session.add(entry)
         await self._session.flush()
         return entry
+
+    @staticmethod
+    def reinforce(entry: MemoryEntry, confidence: float = 1.0) -> None:
+        """Consolidação: uma informação reconfirmada fica mais forte.
+
+        Chamado quando a extração encontra uma memória equivalente à
+        candidata — em vez de descartar, reforça a existente.
+        """
+        entry.usage_count += 1
+        entry.confidence = max(entry.confidence, min(1.0, confidence))
+        entry.last_used_at = utcnow()
 
     async def list_by_user(self, user_id: uuid.UUID) -> list[MemoryEntry]:
         result = await self._session.execute(
@@ -83,10 +140,87 @@ class MemoryService:
         await self._session.delete(entry)
         return True
 
+    async def touch(self, entries: list[MemoryEntry]) -> None:
+        """Marca as memórias como utilizadas agora (recência + frequência)."""
+        now: datetime = utcnow()
+        for entry in entries:
+            entry.last_used_at = now
+            entry.usage_count += 1
+
+    # --- Recuperação semântica ------------------------------------------------
+
+    async def retrieve_semantic(
+        self, user_id: uuid.UUID, query_embedding: list[float]
+    ) -> list[MemoryEntry]:
+        """Memórias mais próximas do vetor da consulta.
+
+        Ranking: cosseno × (0.5 + importância), com corte mínimo de
+        similaridade para não injetar contexto irrelevante no prompt.
+        """
+        limit = self._settings.memory_retrieval_limit
+        threshold = self._settings.memory_similarity_threshold
+
+        if self._session.get_bind().dialect.name == "postgresql":  # pragma: no cover
+            # pgvector: pré-seleciona os N*4 mais próximos no banco e refina
+            # o ranking (importância) em Python.
+            distance = MemoryEntry.embedding.op("<=>")(query_embedding)
+            result = await self._session.execute(
+                select(MemoryEntry)
+                .where(
+                    MemoryEntry.user_id == user_id,
+                    MemoryEntry.embedding.is_not(None),
+                )
+                .order_by(distance)
+                .limit(limit * 4)
+            )
+            candidates = list(result.scalars())
+        else:
+            result = await self._session.execute(
+                select(MemoryEntry).where(
+                    MemoryEntry.user_id == user_id,
+                    MemoryEntry.embedding.is_not(None),
+                )
+            )
+            candidates = list(result.scalars())
+
+        scored: list[tuple[float, MemoryEntry]] = []
+        for memory in candidates:
+            similarity = cosine_similarity(query_embedding, memory.embedding or [])
+            if similarity < threshold:
+                continue
+            scored.append((memory_score(similarity, memory), memory))
+        scored.sort(key=lambda pair: pair[0], reverse=True)
+        return [memory for _, memory in scored[:limit]]
+
+    async def find_duplicate(
+        self,
+        user_id: uuid.UUID,
+        content: str,
+        embedding: list[float] | None,
+    ) -> MemoryEntry | None:
+        """Retorna uma memória existente equivalente à candidata, se houver.
+
+        Com embedding: cosseno acima de `memory_duplicate_threshold`.
+        Sem embedding: Jaccard lexical acima de 0.8.
+        """
+        existing = await self.list_by_user(user_id)
+        for memory in existing:
+            if embedding is not None and memory.embedding is not None:
+                if (
+                    cosine_similarity(embedding, memory.embedding)
+                    >= self._settings.memory_duplicate_threshold
+                ):
+                    return memory
+            elif _lexical_overlap(content, memory.content) >= 0.8:
+                return memory
+        return None
+
+    # --- Recuperação lexical (fallback) ----------------------------------------
+
     async def retrieve_relevant(
         self, user_id: uuid.UUID, query: str
     ) -> list[MemoryEntry]:
-        """Retorna as memórias mais relacionadas à mensagem do usuário."""
+        """Fallback por sobreposição lexical, ponderada pela importância."""
         memories = await self.list_by_user(user_id)
         if not memories:
             return []
@@ -98,8 +232,9 @@ class MemoryService:
             overlap = len(query_terms & terms)
             if overlap == 0:
                 continue
-            score = overlap * (0.5 + memory.relevance)
-            scored.append((score, memory))
+            scored.append((memory_score(float(overlap), memory), memory))
 
         scored.sort(key=lambda pair: pair[0], reverse=True)
-        return [memory for _, memory in scored[: self._retrieval_limit]]
+        return [
+            memory for _, memory in scored[: self._settings.memory_retrieval_limit]
+        ]

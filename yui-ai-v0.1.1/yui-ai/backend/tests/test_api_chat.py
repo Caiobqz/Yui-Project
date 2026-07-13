@@ -79,7 +79,7 @@ async def test_chat_rehydrates_history_after_cache_loss(
 
     # O histórico enviado ao modelo foi rehidratado do banco: contém o
     # turno anterior, não apenas a mensagem nova.
-    _, sent_messages = fake_llm.calls[-1]
+    _, sent_messages, _ = fake_llm.calls[-1]
     contents = [m.content for m in sent_messages]
     assert "meu nome é Leo" in contents
     assert contents[-1] == "qual é o meu nome?"
