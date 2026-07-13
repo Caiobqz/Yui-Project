@@ -1,7 +1,7 @@
-# Yui AI Assistant
+# Yui
 
-Yui AI Assistant é uma plataforma de inteligência artificial pessoal projetada para criar uma assistente digital adaptativa com memória persistente, raciocínio contextual e interação natural.
+Yui é uma inteligência artificial pessoal projetada para evoluir junto ao usuário através de memória contextual, compreensão comportamental e interação contínua.
 
-O projeto utiliza arquitetura baseada em agentes, modelos de linguagem, sistemas de memória hierárquica, recuperação de conhecimento (RAG), planejamento de objetivos e mecanismos de adaptação comportamental para auxiliar usuários em produtividade, aprendizado e organização pessoal.
+Inspirada no conceito de inteligências artificiais avançadas presentes na ficção científica, a Yui busca criar uma experiência de companheirismo digital: uma IA capaz de compreender objetivos, adaptar sua comunicação, oferecer suporte e acompanhar a evolução do usuário ao longo do tempo.
 
-A arquitetura foi desenvolvida para permitir evolução contínua, incluindo suporte futuro para voz, avatar e integração com diferentes ambientes digitais.
+O projeto combina modelos de linguagem, sistemas de memória, arquitetura de agentes e aprendizado adaptativo para construir uma nova geração de interação entre humanos e inteligência artificial.
