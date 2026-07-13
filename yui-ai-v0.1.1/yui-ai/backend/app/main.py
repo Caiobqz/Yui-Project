@@ -1,6 +1,7 @@
 """Ponto de entrada da API da Yui."""
 import logging
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,6 +9,7 @@ from fastapi.responses import JSONResponse
 
 from app.api.routes import auth, chat, health, memories, notes, permissions, tasks
 from app.cognition.identity import identity_prompt
+from app.core.background import shutdown as shutdown_background_tasks
 from app.core.config import get_settings
 from app.core.exceptions import ConversationNotFoundError, RateLimitExceededError
 from app.core.personality import get_personality
@@ -47,6 +49,8 @@ async def lifespan(_app: FastAPI):
     logger.info("Yui %s iniciada (env=%s).", settings.version, settings.environment)
     yield
 
+    # Drena análises pós-turno antes de fechar as conexões.
+    await shutdown_background_tasks()
     await close_redis()
     await engine.dispose()
 
@@ -64,6 +68,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next: Any) -> Any:
+    """Headers defensivos básicos em todas as respostas da API."""
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    return response
 
 
 # --- Handlers de erro: detalhe no log, mensagem genérica ao cliente ---------

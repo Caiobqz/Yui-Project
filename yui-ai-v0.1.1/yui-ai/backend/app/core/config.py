@@ -109,6 +109,8 @@ class Settings(BaseSettings):
     # Planos adicionais entram em app/services/rate_limiter.py.
     rate_limit_chat_per_minute: int = 20
     daily_token_limit: int = 200_000
+    # Tentativas de login/registro por IP e minuto (anti brute force).
+    rate_limit_auth_per_minute: int = 10
 
     # Personalidade
     personality_path: str = "app/config/personality.yaml"
@@ -150,6 +152,11 @@ class Settings(BaseSettings):
                 "Aceitos: 'openai', 'disabled'."
             )
         if not self.is_development:
+            if "*" in self.cors_origin_list:
+                errors.append(
+                    "CORS_ORIGINS não pode conter '*' fora de development "
+                    "(a API usa credenciais)."
+                )
             if self.jwt_secret_key == _DEV_JWT_SECRET or len(self.jwt_secret_key) < 32:
                 errors.append(
                     "JWT_SECRET_KEY ausente ou fraca (mínimo 32 caracteres). "

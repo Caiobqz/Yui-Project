@@ -65,11 +65,13 @@ async def test_adaptation_notes_dedupe_and_cap(db_session) -> None:
 
 
 async def test_relationship_line_evolves(db_session) -> None:
-    _, profile = await _user_and_profile(db_session)
+    user_id, profile = await _user_and_profile(db_session)
     line = UserModelService.relationship_line(profile)
     assert line is not None and "primeira conversa" in line
 
-    UserModelService.register_interaction(profile)
+    # UPDATE atômico: recarrega o objeto para observar o efeito.
+    await UserModelService.register_interaction(db_session, user_id)
+    await db_session.refresh(profile)
     line = UserModelService.relationship_line(profile)
     assert line is not None and "conversa de número 2" in line
     assert profile.last_interaction_at is not None
@@ -111,6 +113,40 @@ async def test_curiosity_prioritizes_stale_plan(db_session) -> None:
     hint = await CuriosityEngine().suggest(db_session, user_id, profile)
     assert hint is not None
     assert "Aprender IA" in hint.reason
+
+
+async def test_completing_step_resets_plan_staleness(db_session) -> None:
+    """Progresso recente numa etapa impede a cobrança indevida do plano."""
+    from app.services.task_service import TaskService
+
+    user_id, profile = await _user_and_profile(db_session)
+    profile.interaction_count = 5
+
+    old = utcnow() - timedelta(days=30)
+    parent = Task(user_id=user_id, title="Aprender IA")
+    db_session.add(parent)
+    await db_session.flush()
+    step_a = Task(user_id=user_id, title="Etapa A", parent_id=parent.id)
+    step_b = Task(user_id=user_id, title="Etapa B", parent_id=parent.id)
+    db_session.add_all([step_a, step_b])
+    await db_session.flush()
+    parent.updated_at = old
+    await db_session.flush()
+
+    # Concluir uma etapa "acorda" o plano (toca o updated_at do pai)...
+    await TaskService(db_session).complete(user_id, step_a.id)
+    hint = await CuriosityEngine().suggest(db_session, user_id, profile)
+    # ...então a curiosidade cai na próxima lacuna (objetivos), não no plano.
+    assert hint is None or "Aprender IA" not in hint.reason
+
+
+async def test_adaptation_rejects_secret_looking_notes(db_session) -> None:
+    _, profile = await _user_and_profile(db_session)
+    added = UserModelService.apply_adaptation(
+        profile, ["Prefere respostas curtas", "senha: hunter2"]
+    )
+    assert added == 1
+    assert profile.preferences == ["Prefere respostas curtas"]
 
 
 async def test_curiosity_silent_when_user_is_known(db_session) -> None:

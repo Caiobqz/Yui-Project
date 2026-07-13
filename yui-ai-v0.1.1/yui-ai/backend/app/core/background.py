@@ -28,3 +28,19 @@ def _on_done(task: asyncio.Task[Any]) -> None:
     exc = task.exception()
     if exc is not None:
         logger.error("Tarefa de background '%s' falhou.", task.get_name(), exc_info=exc)
+
+
+async def shutdown(timeout: float = 10.0) -> None:
+    """Drena tarefas pendentes no desligamento da aplicação.
+
+    Sem isso, o lifespan fecharia engine/Redis com análises pós-turno ainda
+    em andamento, gerando erros de conexão no shutdown.
+    """
+    pending = {t for t in _tasks if not t.done()}
+    if not pending:
+        return
+    logger.info("Aguardando %d tarefa(s) de background no shutdown...", len(pending))
+    _done, still_pending = await asyncio.wait(pending, timeout=timeout)
+    for task in still_pending:
+        logger.warning("Cancelando tarefa de background '%s'.", task.get_name())
+        task.cancel()

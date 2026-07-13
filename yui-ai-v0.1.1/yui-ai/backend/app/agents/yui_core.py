@@ -377,9 +377,10 @@ class YuiCore:
             await self._persist_turn(
                 session, user_id, conversation_id, user_text, assistant_text, responses
             )
-            # Relationship Model: registra a interação.
-            profile = await UserModelService(session).get_or_create(user_id)
-            UserModelService.register_interaction(profile)
+            # Relationship Model: registra a interação (UPDATE atômico —
+            # turnos concorrentes do mesmo usuário não perdem incrementos).
+            await UserModelService(session).get_or_create(user_id)
+            await UserModelService.register_interaction(session, user_id)
             await session.commit()
 
         # Cache de curto prazo (par gravado atomicamente) e contador de tokens.

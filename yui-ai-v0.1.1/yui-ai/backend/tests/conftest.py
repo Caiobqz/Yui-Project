@@ -24,6 +24,7 @@ from sqlalchemy.pool import StaticPool  # noqa: E402
 from app.agents.memory_agent import MemoryAgent  # noqa: E402
 from app.agents.yui_core import YuiCore  # noqa: E402
 from app.api.deps import get_memory_agent, get_yui_core  # noqa: E402
+from app.api.routes.auth import enforce_auth_rate_limit  # noqa: E402
 from app.database.session import get_db_session  # noqa: E402
 from app.main import app as fastapi_app  # noqa: E402
 from app.memory.short_term import ShortTermMemory  # noqa: E402
@@ -93,9 +94,24 @@ async def client(session_factory, fake_redis, fake_llm) -> AsyncGenerator[AsyncC
             llm=fake_llm, embeddings=None, session_factory=session_factory
         )
 
+    async def override_auth_rate_limit() -> None:
+        # O rate limit de auth por IP usa o Redis real via get_redis();
+        # nos testes usa o FakeRedis compartilhado (limites default folgados).
+        limiter = RateLimiter(fake_redis)  # type: ignore[arg-type]
+        from app.core.config import get_settings
+
+        await limiter.enforce_fixed_window(
+            key="auth:test-client",
+            limit=get_settings().rate_limit_auth_per_minute,
+            window_seconds=60,
+            message="Muitas tentativas de autenticação. Aguarde um minuto.",
+            retry_after_seconds=60,
+        )
+
     fastapi_app.dependency_overrides[get_db_session] = override_db_session
     fastapi_app.dependency_overrides[get_yui_core] = override_yui_core
     fastapi_app.dependency_overrides[get_memory_agent] = override_memory_agent
+    fastapi_app.dependency_overrides[enforce_auth_rate_limit] = override_auth_rate_limit
     transport = ASGITransport(app=fastapi_app)
     async with AsyncClient(transport=transport, base_url="http://test") as http:
         yield http

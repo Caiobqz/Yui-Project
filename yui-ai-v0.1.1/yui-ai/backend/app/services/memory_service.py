@@ -71,7 +71,7 @@ def _normalize(text: str) -> set[str]:
     }
 
 
-def _lexical_overlap(a: str, b: str) -> float:
+def lexical_overlap(a: str, b: str) -> float:
     """Similaridade de Jaccard entre os conjuntos de tokens normalizados."""
     ta, tb = _normalize(a), _normalize(b)
     if not ta or not tb:
@@ -211,7 +211,7 @@ class MemoryService:
                     >= self._settings.memory_duplicate_threshold
                 ):
                     return memory
-            elif _lexical_overlap(content, memory.content) >= 0.8:
+            elif lexical_overlap(content, memory.content) >= 0.8:
                 return memory
         return None
 
