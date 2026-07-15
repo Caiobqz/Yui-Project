@@ -46,28 +46,50 @@ class RateLimiter:
         self._redis = redis
 
     @staticmethod
-    def _minute_key(user_id: uuid.UUID) -> str:
-        return f"yui:rl:chat:{user_id}:{int(time.time() // 60)}"
-
-    @staticmethod
     def _tokens_key(user_id: uuid.UUID) -> str:
         return f"yui:rl:tokens:{user_id}:{date.today().isoformat()}"
+
+    async def enforce_fixed_window(
+        self,
+        key: str,
+        limit: int,
+        window_seconds: int,
+        message: str,
+        retry_after_seconds: int | None = None,
+    ) -> None:
+        """Janela fixa genérica (chat por usuário, auth por IP, etc.).
+
+        O EXPIRE é incondicional: um crash entre INCR e EXPIRE não deixa
+        chave órfã sem TTL no Redis.
+        """
+        try:
+            full_key = f"yui:rl:{key}"
+            count = await self._redis.incr(full_key)
+            # Janela + folga para relógios levemente defasados.
+            await self._redis.expire(full_key, window_seconds + 30)
+            if count > limit:
+                raise RateLimitExceededError(
+                    message, retry_after_seconds=retry_after_seconds
+                )
+        except RateLimitExceededError:
+            raise
+        except Exception:  # noqa: BLE001 — fail-open documentado no módulo
+            logger.warning(
+                "Rate limiter indisponível (Redis?); permitindo requisição.",
+                exc_info=True,
+            )
 
     async def enforce(self, user_id: uuid.UUID, plan: str) -> None:
         """Levanta RateLimitExceededError se algum limite do plano foi atingido."""
         limits = get_plan_limits(plan)
+        await self.enforce_fixed_window(
+            key=f"chat:{user_id}:{int(time.time() // 60)}",
+            limit=limits.chat_per_minute,
+            window_seconds=60,
+            message="Limite de mensagens por minuto atingido.",
+            retry_after_seconds=60,
+        )
         try:
-            key = self._minute_key(user_id)
-            count = await self._redis.incr(key)
-            if count == 1:
-                # 90s > janela de 60s: cobre relógios levemente defasados.
-                await self._redis.expire(key, 90)
-            if count > limits.chat_per_minute:
-                raise RateLimitExceededError(
-                    "Limite de mensagens por minuto atingido.",
-                    retry_after_seconds=60,
-                )
-
             used = await self._redis.get(self._tokens_key(user_id))
             if used is not None and int(used) >= limits.tokens_per_day:
                 raise RateLimitExceededError(

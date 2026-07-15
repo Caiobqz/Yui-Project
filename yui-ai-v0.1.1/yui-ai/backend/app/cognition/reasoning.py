@@ -3,16 +3,17 @@
 Formaliza o fluxo:
 
     Entrada → contexto emocional (heurística)
-            → memória relevante (semântica/lexical, com decaimento)
+            → atenção sobre memórias (relevância, objetivos, redundância)
+            → objetivos ativos (Goal Engine)
             → modelo do usuário (adaptação + relacionamento)
+            → self / world model
             → curiosidade (lacunas)
             → estratégia (diretivas de resposta)
             → resposta ou ação (tool calling)
 
-O `CognitiveState` reúne tudo que o turno precisa; `context_service`
-transforma o estado em system prompt. O entendimento de intenção continua
-delegado ao tool calling do modelo — as ferramentas SÃO as intenções
-acionáveis; o estado cognitivo modula COMO responder.
+O `CognitiveState` reúne tudo que o turno precisa; o Context Orchestrator o
+monta e o `context_service` (prompt builder de baixo nível) o transforma em
+system prompt. O entendimento de intenção continua delegado ao tool calling.
 """
 from dataclasses import dataclass, field
 
@@ -33,6 +34,11 @@ class CognitiveState:
         default_factory=lambda: EmotionalContext(signals=(), guidance=())
     )
     curiosity: CuriosityHint | None = None
+    # v0.4 — domínios do World Model e objetivos ativos.
+    self_prompt: str | None = None
+    environment_prompt: str | None = None
+    general_boundary: str | None = None
+    goals: list[str] = field(default_factory=list)
 
     def strategy_directives(self) -> list[str]:
         """Diretivas de estratégia derivadas dos sinais do turno."""

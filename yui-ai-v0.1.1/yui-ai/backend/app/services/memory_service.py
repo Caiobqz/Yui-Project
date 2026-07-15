@@ -39,7 +39,11 @@ _RECENCY_FLOOR = 0.3
 def recency_factor(memory: MemoryEntry, now: datetime | None = None) -> float:
     """Fator de recência (piso.. 1.0) baseado no último uso da memória."""
     now = now or utcnow()
-    reference = ensure_aware(memory.last_used_at or memory.created_at)
+    # Objeto ainda não persistido (sem timestamps) é tratado como recém-criado.
+    raw_reference = memory.last_used_at or memory.created_at
+    if raw_reference is None:
+        return 1.0
+    reference = ensure_aware(raw_reference)
     age_days = max(0.0, (now - reference).total_seconds() / 86_400)
     half_life = _HALF_LIFE_DAYS.get(memory.memory_type, 365.0)
     return max(_RECENCY_FLOOR, math.pow(0.5, age_days / half_life))
@@ -71,7 +75,7 @@ def _normalize(text: str) -> set[str]:
     }
 
 
-def _lexical_overlap(a: str, b: str) -> float:
+def lexical_overlap(a: str, b: str) -> float:
     """Similaridade de Jaccard entre os conjuntos de tokens normalizados."""
     ta, tb = _normalize(a), _normalize(b)
     if not ta or not tb:
@@ -192,6 +196,36 @@ class MemoryService:
         scored.sort(key=lambda pair: pair[0], reverse=True)
         return [memory for _, memory in scored[:limit]]
 
+    async def score_candidates(
+        self,
+        user_id: uuid.UUID,
+        query: str,
+        query_embedding: list[float] | None,
+    ) -> list[tuple[MemoryEntry, float]]:
+        """Candidatas (memória, similaridade) acima do corte, SEM limitar.
+
+        Base do Attention Manager: devolve mais candidatas do que o limite
+        final para que a seleção por atenção (com penalidade de redundância)
+        tenha material para escolher. Usa embeddings quando há vetor da
+        consulta; caso contrário, sobreposição lexical.
+        """
+        threshold = self._settings.memory_similarity_threshold
+        memories = await self.list_by_user(user_id)
+        out: list[tuple[MemoryEntry, float]] = []
+        for memory in memories:
+            if query_embedding is not None and memory.embedding is not None:
+                similarity = cosine_similarity(query_embedding, memory.embedding)
+                if similarity < threshold:
+                    continue
+            else:
+                similarity = lexical_overlap(query, memory.content) or lexical_overlap(
+                    query, memory.category
+                )
+                if similarity <= 0.0:
+                    continue
+            out.append((memory, similarity))
+        return out
+
     async def find_duplicate(
         self,
         user_id: uuid.UUID,
@@ -211,7 +245,7 @@ class MemoryService:
                     >= self._settings.memory_duplicate_threshold
                 ):
                     return memory
-            elif _lexical_overlap(content, memory.content) >= 0.8:
+            elif lexical_overlap(content, memory.content) >= 0.8:
                 return memory
         return None
 

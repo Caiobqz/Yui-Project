@@ -12,15 +12,13 @@ Lacunas detectadas:
 """
 import uuid
 from dataclasses import dataclass
-from datetime import timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.cognition.goal_engine import GoalEngine
 from app.core.config import get_settings
-from app.models.base import utcnow
 from app.models.memory import MemoryEntry
-from app.models.task import Task
 from app.models.user_profile import UserProfile
 
 
@@ -44,8 +42,9 @@ class CuriosityEngine:
             # Início do relacionamento: deixa a conversa fluir sem perguntas.
             return None
 
-        # Lacuna 1: plano parado (oportunidade concreta de ajudar).
-        stale_plan = await self._find_stale_plan(session, user_id)
+        # Lacuna 1: plano parado (oportunidade concreta de ajudar). A detecção
+        # é do Goal Engine — fonte única de verdade sobre estado de objetivos.
+        stale_plan = await GoalEngine().find_stale_plan(session, user_id)
         if stale_plan is not None:
             return CuriosityHint(
                 reason=f"plano '{stale_plan.title}' sem progresso recente",
@@ -90,27 +89,3 @@ class CuriosityEngine:
             .group_by(MemoryEntry.category)
         )
         return {category: count for category, count in result.all()}
-
-    @staticmethod
-    async def _find_stale_plan(
-        session: AsyncSession, user_id: uuid.UUID
-    ) -> Task | None:
-        """Plano (tarefa pai) com etapas pendentes e sem atualização recente."""
-        cutoff = utcnow() - timedelta(days=get_settings().plan_stale_days)
-        pending_children = (
-            select(Task.parent_id)
-            .where(Task.user_id == user_id, Task.status == "pending")
-            .where(Task.parent_id.is_not(None))
-        )
-        result = await session.execute(
-            select(Task)
-            .where(
-                Task.user_id == user_id,
-                Task.parent_id.is_(None),
-                Task.id.in_(pending_children),
-                Task.updated_at < cutoff,
-            )
-            .order_by(Task.updated_at)
-            .limit(1)
-        )
-        return result.scalar_one_or_none()

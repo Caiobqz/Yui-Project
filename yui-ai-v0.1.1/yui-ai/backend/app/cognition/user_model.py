@@ -1,19 +1,23 @@
 """Adaptation Engine + Relationship Model — o modelo do usuário.
 
 Adaptação: notas de comunicação aprendidas pós-turno ("prefere exemplos
-práticos"), com deduplicação lexical e teto — viram orientação de estilo
-no prompt. Relacionamento: desde quando e quantas vezes usuário e Yui
-interagem, dando continuidade entre sessões.
+práticos"), com deduplicação lexical, teto e triagem do Guardian — viram
+orientação de ESTILO no prompt (subordinada à identidade; ver
+context_service). Relacionamento: desde quando e quantas vezes usuário e
+Yui interagem, dando continuidade entre sessões.
 """
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents.guardian import GuardianAgent
 from app.core.config import get_settings
 from app.models.base import utcnow
 from app.models.user_profile import UserProfile
-from app.services.memory_service import _lexical_overlap
+from app.services.memory_service import lexical_overlap
+
+_guardian = GuardianAgent()
 
 
 class UserModelService:
@@ -31,16 +35,28 @@ class UserModelService:
         return profile
 
     @staticmethod
-    def register_interaction(profile: UserProfile) -> None:
-        profile.interaction_count += 1
-        profile.last_interaction_at = utcnow()
+    async def register_interaction(session: AsyncSession, user_id: uuid.UUID) -> None:
+        """Registra uma interação com UPDATE atômico.
+
+        Read-modify-write no objeto ORM perderia incrementos sob turnos
+        concorrentes do mesmo usuário (lost update).
+        """
+        await session.execute(
+            update(UserProfile)
+            .where(UserProfile.user_id == user_id)
+            .values(
+                interaction_count=UserProfile.interaction_count + 1,
+                last_interaction_at=utcnow(),
+            )
+        )
 
     @staticmethod
     def apply_adaptation(profile: UserProfile, notes: list[str]) -> int:
         """Incorpora notas de adaptação novas; retorna quantas foram aceitas.
 
-        Deduplicação lexical (nota ~equivalente já existente é descartada) e
-        teto de notas (as mais antigas saem — o aprendizado recente prevalece).
+        Triagem do Guardian (nunca persistir segredos), deduplicação lexical
+        e teto de notas (as mais antigas saem — o aprendizado recente
+        prevalece).
         """
         max_notes = get_settings().adaptation_max_notes
         current = list(profile.preferences or [])
@@ -49,9 +65,11 @@ class UserModelService:
             note = note.strip()
             if not note or len(note) > 200:
                 continue
+            if _guardian.screen_memory_content(note) is not None:
+                continue
             # Limiar mais baixo que o de memórias: notas são frases curtas e
             # uma palavra extra não deve gerar nota "nova" equivalente.
-            if any(_lexical_overlap(note, existing) >= 0.7 for existing in current):
+            if any(lexical_overlap(note, existing) >= 0.7 for existing in current):
                 continue
             current.append(note)
             added += 1

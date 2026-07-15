@@ -5,6 +5,7 @@ from datetime import datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.base import utcnow
 from app.models.task import Task
 
 
@@ -72,6 +73,13 @@ class TaskService:
         if task is None:
             return None
         task.status = "done"
+        # Progresso numa etapa "acorda" o plano: o Curiosity Engine usa o
+        # updated_at do pai para detectar planos parados — sem este toque,
+        # um plano com progresso recente seria cobrado indevidamente.
+        if task.parent_id is not None:
+            parent = await self._session.get(Task, task.parent_id)
+            if parent is not None:
+                parent.updated_at = utcnow()
         return task
 
     @staticmethod

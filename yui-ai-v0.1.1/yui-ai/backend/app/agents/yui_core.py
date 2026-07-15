@@ -19,6 +19,7 @@ Fluxo cognitivo (Reasoning Engine):
 Este módulo não conhece HTTP nem SDKs de IA: apenas coordena serviços/agentes.
 """
 import logging
+import time
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -33,15 +34,16 @@ from app.agents.task_agent import TaskAgent
 from app.cognition.analyzer import TurnAnalyzer
 from app.cognition.curiosity import CuriosityEngine
 from app.cognition.emotional_context import analyze as analyze_emotional_context
-from app.cognition.reasoning import CognitiveState
+from app.cognition.self_model import build_self_model
 from app.cognition.user_model import UserModelService
 from app.core.background import spawn
 from app.core.config import get_settings
 from app.core.exceptions import ConversationNotFoundError
+from app.core.metrics import METRICS
 from app.memory.short_term import ShortTermMemory
 from app.models.base import utcnow
 from app.models.conversation import Conversation, Message
-from app.services.context_service import build_system_prompt
+from app.services.context_orchestrator import ContextOrchestrator
 from app.services.embeddings.base import EmbeddingProvider
 from app.services.history_service import HistoryService, prepare_for_llm
 from app.services.llm.base import ChatMessage, LLMProvider, LLMResponse
@@ -103,6 +105,9 @@ class YuiCore:
         self._analyzer = TurnAnalyzer(self._utility_llm)
         self._summarizer = ConversationSummarizer(self._utility_llm, session_factory)
         self._maintenance = MemoryMaintenance(session_factory)
+        # Context Orchestrator: único montador do prompt de companhia (v0.4).
+        self._self_model = build_self_model(self._registry)
+        self._orchestrator = ContextOrchestrator(self._memory_agent, self._self_model)
 
     # ------------------------------------------------------------------ turno
 
@@ -276,6 +281,7 @@ class YuiCore:
         conversation_id: uuid.UUID | None,
     ) -> _TurnSetup:
         settings = get_settings()
+        started = time.monotonic()
 
         # Contexto emocional: heurística pura, sem custo.
         emotional = analyze_emotional_context(text)
@@ -283,7 +289,9 @@ class YuiCore:
         # Fase 0 — embedding da consulta ANTES de abrir a sessão.
         query_embedding = await self._memory_agent.embed_query(text)
 
-        # Fase 1 — leitura do estado cognitivo (conexão curta).
+        # Fase 1 — leitura do estado cognitivo (conexão curta). O Context
+        # Orchestrator monta o prompt de companhia (atenção + objetivos +
+        # world/self model), o único caminho de montagem de contexto.
         async with self._session_factory() as session:
             conversation = await self._resolve_conversation(
                 session, user_id, conversation_id
@@ -295,23 +303,24 @@ class YuiCore:
             adaptation_notes = list(profile.preferences or [])
             relationship = UserModelService.relationship_line(profile)
             permission_overrides = await PermissionService(session).overrides(user_id)
-            memories = await self._memory_agent.retrieve(
-                session, user_id, text, query_embedding
-            )
             curiosity = await self._curiosity.suggest(session, user_id, profile)
             history = await self._history.load(session, resolved_id)
 
-            state = CognitiveState(
-                memories=memories,
+            system_prompt, memories_used = await self._orchestrator.build(
+                session=session,
+                user_id=user_id,
+                text=text,
+                query_embedding=query_embedding,
                 summary=summary,
                 adaptation_notes=adaptation_notes,
                 relationship=relationship,
                 emotional=emotional,
                 curiosity=curiosity,
             )
-            system_prompt = build_system_prompt(state)
-            memories_used = len(memories)
             await session.commit()
+
+        METRICS.observe("reasoning.ms", (time.monotonic() - started) * 1000)
+        METRICS.incr("turn.processed")
 
         user_message = ChatMessage(role="user", content=text)
         messages = prepare_for_llm(
@@ -377,9 +386,10 @@ class YuiCore:
             await self._persist_turn(
                 session, user_id, conversation_id, user_text, assistant_text, responses
             )
-            # Relationship Model: registra a interação.
-            profile = await UserModelService(session).get_or_create(user_id)
-            UserModelService.register_interaction(profile)
+            # Relationship Model: registra a interação (UPDATE atômico —
+            # turnos concorrentes do mesmo usuário não perdem incrementos).
+            await UserModelService(session).get_or_create(user_id)
+            await UserModelService.register_interaction(session, user_id)
             await session.commit()
 
         # Cache de curto prazo (par gravado atomicamente) e contador de tokens.
