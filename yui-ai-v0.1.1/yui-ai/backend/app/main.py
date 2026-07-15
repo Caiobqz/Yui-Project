@@ -7,7 +7,16 @@ from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api.routes import auth, chat, health, memories, notes, permissions, tasks
+from app.api.routes import (
+    auth,
+    chat,
+    health,
+    memories,
+    notes,
+    permissions,
+    system,
+    tasks,
+)
 from app.cognition.identity import identity_prompt
 from app.core.background import shutdown as shutdown_background_tasks
 from app.core.config import get_settings
@@ -126,3 +135,4 @@ app.include_router(memories.router, prefix=settings.api_v1_prefix)
 app.include_router(tasks.router, prefix=settings.api_v1_prefix)
 app.include_router(notes.router, prefix=settings.api_v1_prefix)
 app.include_router(permissions.router, prefix=settings.api_v1_prefix)
+app.include_router(system.router, prefix=settings.api_v1_prefix)

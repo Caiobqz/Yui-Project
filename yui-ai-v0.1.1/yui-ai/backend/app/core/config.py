@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     )
 
     app_name: str = "Yui AI Assistant"
-    version: str = "0.3.0"
+    version: str = "0.4.0"
     environment: str = "development"
     api_v1_prefix: str = "/api/v1"
 
@@ -88,6 +88,30 @@ class Settings(BaseSettings):
     curiosity_min_interactions: int = 3
     # Planos sem progresso há N dias despertam curiosidade.
     plan_stale_days: int = 7
+    # Goal Engine: plano parado além disso é considerado abandonado.
+    goal_abandoned_days: int = 21
+
+    # Attention Manager (v0.4) — pesos do Attention Score (determinístico).
+    attention_goal_weight: float = 0.30
+    attention_relationship_weight: float = 0.15
+    attention_preference_weight: float = 0.10
+    attention_graph_weight: float = 0.15
+    attention_redundancy_penalty: float = 0.50
+
+    # Context Orchestrator (v0.4) — orçamento de caracteres por bloco
+    # (proxy determinístico de tokens; ~4 chars/token).
+    ctx_budget_self_chars: int = 800
+    ctx_budget_world_chars: int = 600
+    ctx_budget_goals_chars: int = 1200
+    ctx_budget_adaptation_chars: int = 1200
+    ctx_budget_summary_chars: int = 2400
+    ctx_budget_memories_chars: int = 4000
+
+    # Autonomia (v0.4) — Judgement Engine / Bússola Moral.
+    autonomy_enabled: bool = True
+    moral_act_threshold: float = 0.45
+    moral_confidence_threshold: float = 0.55
+    moral_high_risk_threshold: float = 0.7
     # Adaptation Engine: teto de notas aprendidas por usuário.
     adaptation_max_notes: int = 12
     # Manutenção de memória: roda a cada N interações do usuário.

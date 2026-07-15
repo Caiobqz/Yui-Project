@@ -1,65 +1,78 @@
-# Yui AI Assistant — v0.3 (Cognitive Core)
+# Yui AI Companion — v0.4 (Autonomous Companion Core)
 
-Backend da Yui: inteligência pessoal com identidade permanente, memória
-hierárquica com consolidação e esquecimento, adaptação por usuário,
-curiosidade funcional, contexto emocional, agentes, ferramentas com sistema
-de permissões e streaming.
+A Yui é uma companheira digital: observa, aprende, lembra, compreende, protege
+e orienta o usuário ao longo do tempo. Seu propósito não é responder perguntas
+— é cuidar do usuário. Toda decisão de engenharia serve a esse propósito.
 
-**Realismo:** a Yui não possui consciência, emoções reais nem vontade
-própria. Todos os comportamentos do núcleo cognitivo são modelos
-computacionais de interação — e a própria identidade declara isso ao modelo.
+**Realismo:** a Yui não possui consciência, emoções reais nem vontade própria.
+Identidade e comportamento são implementados em CÓDIGO; o LLM é usado para
+compreender e gerar linguagem, nunca para lógica crítica.
 
-## Yui Cognitive Core
+## Princípio de engenharia
+
+> Sempre que uma decisão puder ser determinística, ela NÃO depende do modelo
+> de linguagem. Toda lógica crítica (atenção, objetivos, julgamento moral,
+> permissões, self model) é Python puro e testável.
+
+## Arquitetura cognitiva
 
 ```
 Yui Cognitive Core
   ├── Identity System        cognition/identity.py — imutável, em código
-  ├── Memory System          working (Redis+resumo) | semantic | episodic |
-  │                          procedural | relationship; consolidação por
-  │                          reforço, decaimento por meia-vida, poda
-  ├── Personality Engine     traços/estilo (YAML) — QUEM é ≠ COMO conversa
-  ├── Reasoning Engine       cognition/reasoning.py — sinais → estratégia
-  ├── Curiosity Engine       lacunas (objetivos desconhecidos, planos parados)
-  │                          → no máximo 1 pergunta sugerida por turno
-  ├── Adaptation Engine      notas aprendidas por usuário ("prefere exemplos
-  │                          práticos"), com dedupe e teto
-  ├── Emotional Context      heurística: frustração/dificuldade/pressa/
-  │                          motivação → modula tom e complexidade
-  ├── Planning System        criar, acompanhar (get_plan_progress) e revisar
-  │                          (review_plan) objetivos
-  ├── Action System          ferramentas validadas pelo Guardian
-  └── Permission System      autorização por usuário/ferramenta; categorias
-                             sensíveis futuras nascem negadas
+  ├── Self Model             cognition/self_model.py — read-only (quem é, versão,
+  │                          capacidades, ferramentas, módulos, saúde)
+  ├── World Model            cognition/world_model.py — 4 domínios nunca misturados:
+  │                          self · user · environment · general
+  ├── Memory System          hierárquica (semantic/episodic/procedural/relationship),
+  │                          consolidação, decaimento, poda
+  ├── Attention Manager      cognition/attention.py — Attention Score determinístico
+  │                          (similaridade · importância · recência · objetivos ·
+  │                          relacionamento · preferência · grafo − redundância)
+  ├── Goal Engine            cognition/goal_engine.py — progresso, parado,
+  │                          abandonado, concluído; termos de objetivos ativos
+  ├── Knowledge Graph        cognition/knowledge_graph.py — grafo derivado
+  │                          (usuário → objetivos → etapas → categorias)
+  ├── Moral Compass          cognition/moral_compass.py — julga ações autônomas por
+  │                          benefício/risco/reversibilidade/urgência/alinhamento
+  ├── Judgement Engine       cognition/judgement.py — Percepção→…→Decisão→Aprendizado
+  ├── Permission System      services/permission_service.py — portão rígido de
+  │                          ferramentas (ações pedidas pelo usuário)
+  ├── Context Orchestrator   services/context_orchestrator.py — ÚNICO montador do
+  │                          prompt, com orçamento de tokens por bloco
+  └── Observability          core/metrics.py — decisões, atenção, raciocínio, moral
 ```
 
-### Fluxo cognitivo de um turno
+### Fluxo de um turno
 
 ```
 Entrada → contexto emocional (heurística)
-        → memórias relevantes (similaridade × importância × recência)
-        → modelo do usuário (adaptação + relacionamento) + permissões
-        → curiosidade (lacunas) → estratégia → system prompt
-        → LLM ⇄ ferramentas (Guardian + permissões; TaskAgent executa)
-        → persistência + interação registrada
-Pós-turno (modelo utilitário barato, em background):
-        TurnAnalyzer → memórias tipadas + notas de adaptação
-        → manutenção periódica (esquecimento) → resumo de conversas longas
+        → Context Orchestrator:
+             Attention Manager → Memory → Goals → Relationship →
+             World Model → Self Model → Identity → Prompt Builder
+        → LLM ⇄ ferramentas (Guardian + Permission System)
+        → persistência + métricas de raciocínio
+Pós-turno (modelo utilitário barato): memórias + adaptação; manutenção; resumo
 ```
 
-### Memória hierárquica
+### Autonomia por prudência (Judgement Engine)
 
-| Camada | Onde | Exemplo |
-|---|---|---|
-| Working | Redis + `conversations.summary` | contexto atual |
-| Semantic | `memory_entries` (type=semantic) | "gosta de programação" |
-| Episodic | type=episodic (meia-vida 30d) | "terminou o projeto X" |
-| Procedural | type=procedural | "prefere commits pequenos" |
-| Relationship | type=relationship + `user_profiles` | marcos e continuidade |
+Ações **iniciadas pela própria Yui** não passam por permissão binária: passam
+por julgamento. O Goal Engine detecta situações (abandono, oportunidade); cada
+candidata vira uma `ProposedAction` avaliada pela Bússola Moral (score e
+confiança determinísticos, com o Permission System como portão duro). Só as
+aprovadas (`proceed`) viram iniciativa. Não há canal de entrega ainda (voz é
+futura); a decisão é exposta, read-only, em `GET /api/v1/initiatives`.
 
-Cada memória tem importância, confiança, origem, data, frequência de uso e
-última utilização. Reconfirmações **reforçam** a memória existente
-(consolidação); memórias extraídas, nunca usadas e irrelevantes são
-**podadas** — as criadas pelo usuário, nunca.
+O Self Model é **imutável**: nenhum usuário, agente ou LLM o altera.
+
+## Endpoints novos (v0.4, read-only, autenticados)
+
+| Rota | Descrição |
+|------|-----------|
+| `GET /api/v1/self` | Self Model (identidade, capacidades, ferramentas, saúde) |
+| `GET /api/v1/metrics` | Observabilidade (contadores e amostras agregados) |
+| `GET /api/v1/initiatives` | Ações autônomas aprovadas pela Bússola Moral |
+| `GET /api/v1/knowledge-graph` | Grafo de entidades derivado do usuário |
 
 ## Executando localmente
 
@@ -69,38 +82,25 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
 cp .env.example .env                      # ANTHROPIC_API_KEY etc.
 alembic upgrade head
-uvicorn app.main:app --reload             # docs em http://localhost:8000/docs
+uvicorn app.main:app --reload
 ```
-
-## Endpoints principais
-
-| Método | Rota                              | Descrição                                  |
-|--------|-----------------------------------|---------------------------------------------|
-| POST   | /api/v1/auth/{register,login}     | Conta e token JWT                           |
-| POST   | /api/v1/chat                      | Conversar (resposta completa)               |
-| POST   | /api/v1/chat/stream               | Conversar via SSE (delta/tool/done/error)   |
-| GET/POST/DELETE | /api/v1/memories         | Memórias (com tipo, uso e confiança)        |
-| GET    | /api/v1/tasks, /api/v1/notes      | Tarefas/planos e notas                      |
-| GET    | /api/v1/permissions               | Permissões efetivas de ferramentas          |
-| PUT    | /api/v1/permissions/{tool_name}   | Conceder/revogar uma ferramenta             |
-| GET    | /health, /health/ready            | Liveness / readiness                        |
 
 ## Qualidade
 
 ```bash
-pytest              # 84 testes
+pytest              # 118 testes
 ruff check app tests alembic
 mypy
 ```
 
-## Preparação para as próximas versões
+## Preparação para próximas versões
 
-- **v0.4 (voz):** o canal SSE é o transporte do TTS token a token; STT entra
-  como nova rota que desemboca no mesmo `YuiCore.stream_message`; wake word é
-  responsabilidade do cliente.
-- **v0.5 (avatar/visão/desktop):** eventos SSE (`delta`/`tool`/`done`) já
-  carregam o que um avatar precisa para reagir; visão entraria como novo tipo
-  de conteúdo no contrato `ChatMessage`.
-- **Ferramentas sensíveis (arquivos, SO, calendário, apps):** registram
-  `default_allowed=False` e categoria própria — o Permission System já nega
-  até o usuário conceder via API.
+- **Voz (v0.4+):** SSE já é o transporte token a token do TTS; STT vira rota que
+  desemboca em `stream_message`. Iniciativas aprovadas ganham um canal de push.
+- **Avatar / visão (v0.5):** eventos SSE já carregam estado para reagir; visão
+  entra como novo tipo de conteúdo em `ChatMessage`.
+- **Knowledge Graph persistido:** hoje é derivado; a versão futura persiste o
+  grafo e extrai entidades/relações com o modelo utilitário.
+- **Ferramentas sensíveis (arquivos, SO, calendário, apps):** nascem
+  `default_allowed=False` — o Permission System (ações do usuário) e a Bússola
+  Moral (ações autônomas) já as tratam com segurança.
