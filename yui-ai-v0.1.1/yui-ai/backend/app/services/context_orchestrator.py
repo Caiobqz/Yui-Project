@@ -16,11 +16,12 @@ import uuid
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.memory_agent import MemoryAgent
+from app.cognition.affect import AffectSnapshot
 from app.cognition.attention import AttentionContext, AttentionManager
 from app.cognition.curiosity import CuriosityHint
 from app.cognition.emotional_context import EmotionalContext
-from app.cognition.goal_engine import GoalEngine
-from app.cognition.knowledge_graph import build_knowledge_graph
+from app.cognition.goal_engine import GoalEngine, GoalState
+from app.cognition.knowledge_graph import related_category_terms
 from app.cognition.reasoning import CognitiveState
 from app.cognition.self_model import SelfModel
 from app.cognition.world_model import build_world_model
@@ -80,21 +81,31 @@ class ContextOrchestrator:
         relationship: str | None,
         emotional: EmotionalContext,
         curiosity: CuriosityHint | None,
+        goal_states: list[GoalState] | None = None,
+        affect: AffectSnapshot | None = None,
+        initiative: str | None = None,
     ) -> tuple[str, int]:
-        """Monta o system prompt de companhia. Retorna (prompt, memórias_usadas)."""
+        """Monta o system prompt de companhia. Retorna (prompt, memórias_usadas).
+
+        `goal_states` já analisados no turno são reaproveitados (curiosidade e
+        contexto compartilham a mesma análise); `affect` é o estado afetivo
+        persistente e `initiative` a iniciativa própria pendente (v0.5).
+        """
         settings = get_settings()
 
         # Estado dos objetivos calculado UMA vez por turno e reaproveitado
-        # pela atenção, pelo grafo e pelo bloco de objetivos (antes: 3× por turno).
-        goal_states = await self._goals.analyze(session, user_id)
+        # pela atenção, pelo grafo e pelo bloco de objetivos.
+        if goal_states is None:
+            goal_states = await self._goals.analyze(session, user_id)
         goal_terms = GoalEngine.active_terms(goal_states)
         graph_terms: set[str] = set()
         if goal_terms:
-            graph = await build_knowledge_graph(session, user_id)
             goal_labels = {
                 s.title for s in goal_states if s.status in ("active", "stalled")
             }
-            graph_terms = graph.related_terms(goal_labels)
+            # Caminho leve do Knowledge Graph: só as categorias relacionadas,
+            # sem materializar o grafo (que carregaria todas as memórias).
+            graph_terms = await related_category_terms(session, user_id, goal_labels)
 
         memories = await self.select_memories(
             session,
@@ -110,6 +121,7 @@ class ContextOrchestrator:
         ]
         world = build_world_model(self._self_model)
 
+        affect_prompt = affect.to_prompt() if affect is not None else None
         state = CognitiveState(
             memories=_clip_memories(memories, settings.ctx_budget_memories_chars),
             summary=_clip(summary, settings.ctx_budget_summary_chars) if summary else None,
@@ -125,6 +137,12 @@ class ContextOrchestrator:
             ),
             general_boundary=world.general_boundary(),
             goals=_clip_lines(goal_lines, settings.ctx_budget_goals_chars),
+            affect_prompt=(
+                _clip(affect_prompt, settings.ctx_budget_affect_chars)
+                if affect_prompt
+                else None
+            ),
+            initiative=initiative,
         )
         return build_system_prompt(state), len(memories)
 

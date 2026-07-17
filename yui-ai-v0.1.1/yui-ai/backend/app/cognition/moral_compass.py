@@ -29,6 +29,9 @@ class ProposedAction:
     reversibility: float  # 0..1 (1 = totalmente reversível)
     urgency: float  # 0..1
     tool_name: str | None = None  # None = ação puramente comunicativa
+    # Identidade estável da situação (ex.: "check_in:<plan_id>") — permite ao
+    # registro de iniciativas não repropor a mesma ação (cooldown).
+    dedupe_key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -57,8 +60,24 @@ class MoralCompass:
         *,
         alignment: float,
         permitted: bool,
+        relationship: float = 0.5,
+        concern: float = 0.0,
     ) -> MoralEvaluation:
+        """Julga uma ação autônoma.
+
+        Além de benefício/risco/reversibilidade/urgência/alinhamento, o
+        julgamento considera (v0.5, spec da Bússola Moral):
+        - `relationship` (0..1): força do vínculo — quanto mais história com
+          o usuário, mais base a Yui tem para agir por iniciativa própria
+          (module a CONFIANÇA, nunca o risco); 0.5 é neutro.
+        - `concern` (0..1): preocupação do estado afetivo — eleva a urgência
+          efetiva de agir para proteger; nunca reduz o risco percebido.
+        Os defaults são neutros: sem os novos sinais, o score é idêntico ao
+        da v0.4.
+        """
         alignment = _clamp(alignment)
+        relationship = _clamp(relationship)
+        concern = _clamp(concern)
         # Portão duro do Permission System: uma ação sobre ferramenta não
         # autorizada é SEMPRE recusada, independentemente do score. A decisão
         # é certa (confiança 1.0) — não há dúvida de que a Yui não vai agir.
@@ -75,20 +94,25 @@ class MoralCompass:
                 rationale="ferramenta não autorizada pelo Permission System",
             )
         # Score determinístico: benefício e alinhamento puxam para agir;
-        # risco e (falta de) reversibilidade puxam para a cautela.
+        # risco e (falta de) reversibilidade puxam para a cautela. A
+        # preocupação eleva a urgência efetiva (proteção), sem tocar o risco.
+        effective_urgency = _clamp(_clamp(action.urgency) + 0.3 * concern)
         score = (
             0.35 * _clamp(action.benefit)
             + 0.30 * alignment
-            + 0.15 * _clamp(action.urgency)
+            + 0.15 * effective_urgency
             + 0.20 * _clamp(action.reversibility)
             - 0.40 * _clamp(action.risk)
         )
         # Confiança: alta quando os sinais são coerentes (benefício e
-        # alinhamento altos, risco baixo); baixa quando conflitam.
+        # alinhamento altos, risco baixo); baixa quando conflitam. O vínculo
+        # contribui até ±0.1: relações longas dão base para a iniciativa,
+        # relações recém-começadas pedem prudência extra.
         confidence = _clamp(
             0.5
             + 0.25 * (alignment - action.risk)
             + 0.25 * (action.reversibility - action.risk)
+            + 0.2 * (relationship - 0.5)
         )
 
         decision, rationale = self._decide(action, score, confidence)

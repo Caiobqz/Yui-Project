@@ -18,7 +18,7 @@ def test_self_model_reflects_registry_and_identity() -> None:
     registry = build_default_registry()
     model = build_self_model(registry)
     assert model.name == "Yui"
-    assert model.version == "0.4.0"
+    assert model.version == "0.5.0"
     assert "proteger" in model.purpose
     assert set(model.tools_available) == {s.name for s in registry.specs()}
     assert model.health == "operational"

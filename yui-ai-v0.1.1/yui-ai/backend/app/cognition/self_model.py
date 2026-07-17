@@ -19,7 +19,8 @@ _CAPABILITIES: tuple[str, ...] = (
     "memória hierárquica (semântica, episódica, procedural, relacionamento)",
     "recuperação por atenção (relevância, recência, objetivos, redundância)",
     "acompanhamento de objetivos e planos",
-    "julgamento de ações autônomas pela Bússola Moral",
+    "estados afetivos computacionais persistentes (apego, alegria, preocupação)",
+    "iniciativas próprias raras e prudentes, julgadas pela Bússola Moral",
     "execução de ferramentas autorizadas",
 )
 
@@ -29,6 +30,8 @@ _MODULES: tuple[str, ...] = (
     "memory_system",
     "attention_manager",
     "goal_engine",
+    "affective_state_model",
+    "initiative_system",
     "moral_compass",
     "judgement_engine",
     "world_model",

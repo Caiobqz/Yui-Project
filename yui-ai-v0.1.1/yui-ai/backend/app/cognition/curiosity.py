@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.cognition.goal_engine import GoalEngine
+from app.cognition.goal_engine import GoalEngine, GoalState
 from app.core.config import get_settings
 from app.models.memory import MemoryEntry
 from app.models.user_profile import UserProfile
@@ -34,6 +34,7 @@ class CuriosityEngine:
         session: AsyncSession,
         user_id: uuid.UUID,
         profile: UserProfile,
+        goal_states: list[GoalState] | None = None,
     ) -> CuriosityHint | None:
         settings = get_settings()
         if not settings.curiosity_enabled:
@@ -41,10 +42,24 @@ class CuriosityEngine:
         if profile.interaction_count < settings.curiosity_min_interactions:
             # Início do relacionamento: deixa a conversa fluir sem perguntas.
             return None
+        # Espaçamento (v0.5): uma lacuna estável (ex.: nenhum objetivo
+        # conhecido) sugeriria a MESMA pergunta todo turno — interrogatório.
+        # Após uma sugestão, a curiosidade silencia por N interações.
+        last = profile.last_curiosity_interaction
+        if (
+            last is not None
+            and profile.interaction_count - last
+            < settings.curiosity_min_gap_interactions
+        ):
+            return None
 
         # Lacuna 1: plano parado (oportunidade concreta de ajudar). A detecção
-        # é do Goal Engine — fonte única de verdade sobre estado de objetivos.
-        stale_plan = await GoalEngine().find_stale_plan(session, user_id)
+        # é do Goal Engine — fonte única de verdade sobre estado de objetivos;
+        # estados já analisados no turno são reaproveitados (sem re-query).
+        if goal_states is not None:
+            stale_plan = GoalEngine.stale_from(goal_states)
+        else:
+            stale_plan = await GoalEngine().find_stale_plan(session, user_id)
         if stale_plan is not None:
             return CuriosityHint(
                 reason=f"plano '{stale_plan.title}' sem progresso recente",

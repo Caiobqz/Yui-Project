@@ -84,17 +84,18 @@ class GoalEngine:
     ) -> set[str]:
         return self.active_terms(await self.analyze(session, user_id))
 
+    @staticmethod
+    def stale_from(states: list[GoalState]) -> GoalState | None:
+        """Plano mais antigo parado/abandonado dentre estados já analisados."""
+        stale = [s for s in states if s.status in ("stalled", "abandoned")]
+        stale.sort(key=lambda s: s.idle_days, reverse=True)
+        return stale[0] if stale else None
+
     async def find_stale_plan(
         self, session: AsyncSession, user_id: uuid.UUID
     ) -> GoalState | None:
         """Plano mais antigo parado/abandonado (usado pela curiosidade)."""
-        stale = [
-            s
-            for s in await self.analyze(session, user_id)
-            if s.status in ("stalled", "abandoned")
-        ]
-        stale.sort(key=lambda s: s.idle_days, reverse=True)
-        return stale[0] if stale else None
+        return self.stale_from(await self.analyze(session, user_id))
 
     def _state(self, parent: Task, children: list[Task]) -> GoalState:
         settings = get_settings()

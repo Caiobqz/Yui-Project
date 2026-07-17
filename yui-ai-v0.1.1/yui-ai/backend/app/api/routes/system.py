@@ -12,10 +12,10 @@ from typing import Any
 from fastapi import APIRouter
 
 from app.api.deps import CurrentUser, DbSession
-from app.cognition.judgement import JudgementEngine
 from app.cognition.knowledge_graph import build_knowledge_graph
 from app.cognition.self_model import get_self_model
 from app.core.metrics import METRICS
+from app.services.initiative_service import InitiativeService
 
 router = APIRouter(tags=["system"])
 
@@ -32,17 +32,26 @@ async def metrics(_user: CurrentUser) -> dict[str, Any]:
 
 @router.get("/initiatives")
 async def initiatives(user: CurrentUser, session: DbSession) -> list[dict[str, Any]]:
-    approved = await JudgementEngine().propose_initiatives(session, user.id)
+    """Iniciativas registradas da Yui (v0.5: persistidas, não recomputadas).
+
+    A geração acontece no ciclo cognitivo dela (pós-turno) — a rota apenas
+    observa o registro. Campos da v0.4 preservados; `decision` é sempre
+    "proceed" porque só aprovadas são registradas.
+    """
+    records = await InitiativeService(session).list_recent(user.id)
     return [
         {
-            "kind": i.kind,
-            "description": i.description,
-            "decision": i.evaluation.decision,
-            "confidence": i.evaluation.confidence,
-            "score": i.evaluation.score,
-            "rationale": i.evaluation.rationale,
+            "id": str(r.id),
+            "kind": r.kind,
+            "description": r.description,
+            "decision": "proceed",
+            "confidence": r.confidence,
+            "score": r.score,
+            "rationale": r.rationale,
+            "status": r.status,
+            "created_at": r.created_at.isoformat(),
         }
-        for i in approved
+        for r in records
     ]
 
 

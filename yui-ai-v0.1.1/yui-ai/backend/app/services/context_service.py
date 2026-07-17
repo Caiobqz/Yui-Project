@@ -20,7 +20,8 @@ from app.core.personality import get_personality
 
 _TAG_RE = re.compile(
     r"</?\s*(memorias_do_usuario|resumo_da_conversa|adaptacao_ao_usuario"
-    r"|estrategia_do_turno|objetivos_ativos|modelo_da_yui|ambiente)\s*>",
+    r"|estrategia_do_turno|objetivos_ativos|modelo_da_yui|ambiente"
+    r"|estado_afetivo)\s*>",
     re.IGNORECASE,
 )
 
@@ -50,6 +51,15 @@ def build_system_prompt(state: CognitiveState) -> str:
             "\n\n<modelo_da_yui>\n"
             f"{_sanitize(state.self_prompt)}\n"
             "</modelo_da_yui>"
+        )
+
+    # Estado afetivo persistente (v0.5) — pertence ao domínio SELF: é o
+    # estado computacional da própria Yui, nunca um fato sobre o usuário.
+    if state.affect_prompt:
+        prompt += (
+            "\n\n<estado_afetivo>\n"
+            f"{_sanitize(state.affect_prompt)}\n"
+            "</estado_afetivo>"
         )
 
     # --- Domínio ENVIRONMENT + fronteira do conhecimento GERAL ---------------

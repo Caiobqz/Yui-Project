@@ -140,6 +140,23 @@ async def test_completing_step_resets_plan_staleness(db_session) -> None:
     assert hint is None or "Aprender IA" not in hint.reason
 
 
+async def test_curiosity_respects_gap_between_questions(db_session) -> None:
+    """Após sugerir, a curiosidade silencia por N interações (v0.5)."""
+    user_id, profile = await _user_and_profile(db_session)
+    profile.interaction_count = 5
+    # Lacuna estável: nenhum objetivo conhecido → haveria sugestão.
+    assert await CuriosityEngine().suggest(db_session, user_id, profile) is not None
+
+    # Sugestão registrada na interação 5 → silêncio nas próximas.
+    profile.last_curiosity_interaction = 5
+    profile.interaction_count = 6
+    assert await CuriosityEngine().suggest(db_session, user_id, profile) is None
+
+    # Espaço suficiente: a curiosidade volta.
+    profile.interaction_count = 9
+    assert await CuriosityEngine().suggest(db_session, user_id, profile) is not None
+
+
 async def test_adaptation_rejects_secret_looking_notes(db_session) -> None:
     _, profile = await _user_and_profile(db_session)
     added = UserModelService.apply_adaptation(

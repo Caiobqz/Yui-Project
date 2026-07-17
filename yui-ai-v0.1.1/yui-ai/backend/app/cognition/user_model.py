@@ -79,6 +79,15 @@ class UserModelService:
         return added
 
     @staticmethod
+    def relationship_strength(profile: UserProfile) -> float:
+        """Força do vínculo (0..1), saturando com a convivência.
+
+        Insumo da Bússola Moral (v0.5): relações longas dão mais base para
+        iniciativa própria; relações recém-começadas pedem prudência extra.
+        """
+        return min(1.0, profile.interaction_count / 50.0)
+
+    @staticmethod
     def relationship_line(profile: UserProfile) -> str | None:
         """Linha de continuidade do relacionamento para o prompt."""
         if profile.interaction_count <= 0:

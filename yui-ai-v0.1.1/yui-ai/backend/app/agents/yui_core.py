@@ -11,10 +11,12 @@ Fluxo cognitivo (Reasoning Engine):
       → estratégia → system prompt (CognitiveState)
       → loop agêntico: LLM ⇄ ferramentas
         (Guardian valida + permissões; TaskAgent executa)  (fase 2, SEM banco)
-      → persistência do turno + interação + uso     (fase 3, conexão curta)
+      → persistência do turno + interação + uso + estado afetivo +
+        entrega de iniciativa                       (fase 3, conexão curta)
       → pós-turno em background (modelo utilitário): TurnAnalyzer propõe
         memórias (Memory System) e adaptação (Adaptation Engine);
-        manutenção de memória periódica; resumo de conversas longas.
+        manutenção de memória periódica; resumo de conversas longas;
+        geração de iniciativas (determinística, Judgement Engine).
 
 Este módulo não conhece HTTP nem SDKs de IA: apenas coordena serviços/agentes.
 """
@@ -31,9 +33,16 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.agents.guardian import GuardianAgent
 from app.agents.memory_agent import MemoryAgent
 from app.agents.task_agent import TaskAgent
+from app.cognition.affect import AffectService
 from app.cognition.analyzer import TurnAnalyzer
 from app.cognition.curiosity import CuriosityEngine
-from app.cognition.emotional_context import analyze as analyze_emotional_context
+from app.cognition.emotional_context import (
+    EmotionalContext,
+)
+from app.cognition.emotional_context import (
+    analyze as analyze_emotional_context,
+)
+from app.cognition.goal_engine import GoalEngine
 from app.cognition.self_model import build_self_model
 from app.cognition.user_model import UserModelService
 from app.core.background import spawn
@@ -46,6 +55,7 @@ from app.models.conversation import Conversation, Message
 from app.services.context_orchestrator import ContextOrchestrator
 from app.services.embeddings.base import EmbeddingProvider
 from app.services.history_service import HistoryService, prepare_for_llm
+from app.services.initiative_service import InitiativeService
 from app.services.llm.base import ChatMessage, LLMProvider, LLMResponse
 from app.services.memory_maintenance import MemoryMaintenance
 from app.services.permission_service import PermissionService
@@ -76,7 +86,11 @@ class _TurnSetup:
     system_prompt: str
     messages: list[ChatMessage]
     memories_used: int
+    emotional: EmotionalContext
     permission_overrides: dict[str, bool] = field(default_factory=dict)
+    # Iniciativa própria pendente injetada neste turno (marcada como
+    # entregue na fase 3 — a Yui oferece o assunto uma vez, nunca insiste).
+    initiative_id: uuid.UUID | None = None
 
 
 class YuiCore:
@@ -106,8 +120,13 @@ class YuiCore:
         self._summarizer = ConversationSummarizer(self._utility_llm, session_factory)
         self._maintenance = MemoryMaintenance(session_factory)
         # Context Orchestrator: único montador do prompt de companhia (v0.4).
+        # O Goal Engine é compartilhado: a análise de objetivos roda UMA vez
+        # por turno e alimenta curiosidade, atenção e contexto (v0.5).
         self._self_model = build_self_model(self._registry)
-        self._orchestrator = ContextOrchestrator(self._memory_agent, self._self_model)
+        self._goal_engine = GoalEngine()
+        self._orchestrator = ContextOrchestrator(
+            self._memory_agent, self._self_model, goal_engine=self._goal_engine
+        )
 
     # ------------------------------------------------------------------ turno
 
@@ -139,9 +158,7 @@ class YuiCore:
                 break
             await self._handle_tool_calls(ctx, setup, messages, response)
 
-        await self._finalize_turn(
-            user_id, setup.conversation_id, text, final_text, responses
-        )
+        await self._finalize_turn(user_id, setup, text, final_text, responses)
         self._schedule_post_turn(user_id, setup.conversation_id, text, final_text)
 
         return YuiReply(
@@ -194,9 +211,7 @@ class YuiCore:
             }
             await self._handle_tool_calls(ctx, setup, messages, response)
 
-        await self._finalize_turn(
-            user_id, setup.conversation_id, text, final_text, responses
-        )
+        await self._finalize_turn(user_id, setup, text, final_text, responses)
         self._schedule_post_turn(user_id, setup.conversation_id, text, final_text)
 
         yield {
@@ -257,6 +272,16 @@ class YuiCore:
             except Exception:
                 logger.exception("Sumarização falhou (pós-turno).")
 
+        # Iniciativas (v0.5): julga situações atuais e registra as aprovadas
+        # — determinístico, sem LLM; cooldown e teto garantem raridade.
+        if settings.initiative_generation_enabled and settings.autonomy_enabled:
+            try:
+                async with self._session_factory() as session:
+                    await InitiativeService(session).generate(user_id)
+                    await session.commit()
+            except Exception:
+                logger.exception("Geração de iniciativas falhou (pós-turno).")
+
     def _schedule_post_turn(
         self,
         user_id: uuid.UUID,
@@ -265,7 +290,11 @@ class YuiCore:
         assistant_text: str,
     ) -> None:
         settings = get_settings()
-        if not (settings.memory_extraction_enabled or settings.summarization_enabled):
+        if not (
+            settings.memory_extraction_enabled
+            or settings.summarization_enabled
+            or (settings.initiative_generation_enabled and settings.autonomy_enabled)
+        ):
             return
         spawn(
             self.run_post_turn(user_id, conversation_id, user_text, assistant_text),
@@ -303,8 +332,23 @@ class YuiCore:
             adaptation_notes = list(profile.preferences or [])
             relationship = UserModelService.relationship_line(profile)
             permission_overrides = await PermissionService(session).overrides(user_id)
-            curiosity = await self._curiosity.suggest(session, user_id, profile)
+            goal_states = await self._goal_engine.analyze(session, user_id)
+            curiosity = await self._curiosity.suggest(
+                session, user_id, profile, goal_states=goal_states
+            )
             history = await self._history.load(session, resolved_id)
+
+            # v0.5 — estado afetivo persistente e iniciativa própria pendente.
+            affect = (
+                await AffectService(session).snapshot(user_id)
+                if settings.affect_enabled
+                else None
+            )
+            pending_initiative = (
+                await InitiativeService(session).pending_for_turn(user_id)
+                if settings.autonomy_enabled
+                else None
+            )
 
             system_prompt, memories_used = await self._orchestrator.build(
                 session=session,
@@ -316,7 +360,18 @@ class YuiCore:
                 relationship=relationship,
                 emotional=emotional,
                 curiosity=curiosity,
+                goal_states=goal_states,
+                affect=affect,
+                initiative=(
+                    pending_initiative.description
+                    if pending_initiative is not None
+                    else None
+                ),
             )
+            if curiosity is not None:
+                # Registra a sugestão para o espaçamento da curiosidade
+                # (a conversa nunca vira interrogatório).
+                profile.last_curiosity_interaction = profile.interaction_count
             await session.commit()
 
         METRICS.observe("reasoning.ms", (time.monotonic() - started) * 1000)
@@ -331,7 +386,11 @@ class YuiCore:
             system_prompt=system_prompt,
             messages=messages,
             memories_used=memories_used,
+            emotional=emotional,
             permission_overrides=permission_overrides,
+            initiative_id=(
+                pending_initiative.id if pending_initiative is not None else None
+            ),
         )
 
     def _tool_context(
@@ -376,11 +435,13 @@ class YuiCore:
     async def _finalize_turn(
         self,
         user_id: uuid.UUID,
-        conversation_id: uuid.UUID,
+        setup: _TurnSetup,
         user_text: str,
         assistant_text: str,
         responses: list[LLMResponse],
     ) -> None:
+        settings = get_settings()
+        conversation_id = setup.conversation_id
         # Fase 3 — persistência (conexão curta).
         async with self._session_factory() as session:
             await self._persist_turn(
@@ -390,6 +451,16 @@ class YuiCore:
             # turnos concorrentes do mesmo usuário não perdem incrementos).
             await UserModelService(session).get_or_create(user_id)
             await UserModelService.register_interaction(session, user_id)
+            # Affective State (v0.5): os eventos do turno atualizam o estado
+            # persistente — determinístico e barato (1 UPDATE na mesma conexão).
+            if settings.affect_enabled:
+                await AffectService(session).register_turn(user_id, setup.emotional)
+            # Iniciativa injetada neste turno foi entregue: a Yui ofereceu o
+            # assunto uma vez e não vai insistir.
+            if setup.initiative_id is not None:
+                await InitiativeService(session).mark_delivered(
+                    user_id, setup.initiative_id
+                )
             await session.commit()
 
         # Cache de curto prazo (par gravado atomicamente) e contador de tokens.

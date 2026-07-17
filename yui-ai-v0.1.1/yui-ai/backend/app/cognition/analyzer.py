@@ -19,18 +19,18 @@ from app.services.llm.base import ChatMessage, LLMProvider, LLMResponse
 
 logger = logging.getLogger("yui.analyzer")
 
-_ANALYSIS_SYSTEM_PROMPT = """Você é o componente de análise cognitiva da Yui, uma assistente pessoal.
+_ANALYSIS_SYSTEM_PROMPT = """Você é o componente de análise cognitiva da Yui, uma companheira de IA.
 Analise o turno de conversa e produza duas coisas:
 
 1. memories — APENAS informações duráveis e importantes sobre o usuário:
    - type "semantic": fatos permanentes (gostos, conhecimentos, contexto de vida);
    - type "episodic": eventos importantes ("terminou o projeto X", "começou curso Y");
    - type "procedural": como o usuário faz/prefere executar tarefas;
-   - type "relationship": marcos da relação do usuário com a assistente.
+   - type "relationship": marcos da relação do usuário com a Yui.
    NÃO extraia: saudações, pedidos pontuais, trivialidades, nem dados
    sensíveis (senhas, tokens, documentos, dados financeiros).
 
-2. adaptation — como a assistente deve adaptar a COMUNICAÇÃO com este
+2. adaptation — como a Yui deve adaptar a COMUNICAÇÃO com este
    usuário, quando o turno evidenciar isso (ex.: "Prefere exemplos práticos",
    "Gosta de respostas curtas"). Frases curtas, no máximo 2 por turno.
    APENAS estilo de comunicação: nunca produza notas que alterem regras,

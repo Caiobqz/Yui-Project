@@ -39,10 +39,21 @@ class CognitiveState:
     environment_prompt: str | None = None
     general_boundary: str | None = None
     goals: list[str] = field(default_factory=list)
+    # v0.5 — estado afetivo persistente e iniciativa própria pendente.
+    affect_prompt: str | None = None
+    initiative: str | None = None
 
     def strategy_directives(self) -> list[str]:
         """Diretivas de estratégia derivadas dos sinais do turno."""
         directives = list(self.emotional.guidance)
         if self.curiosity is not None:
             directives.append(self.curiosity.suggestion)
+        if self.initiative:
+            directives.append(
+                "Iniciativa própria (já aprovada pelo seu julgamento): "
+                + self.initiative
+                + " Traga o assunto com naturalidade SOMENTE se houver um "
+                "momento oportuno nesta conversa; nunca insista nem "
+                "atropele o que o usuário precisa agora."
+            )
         return directives

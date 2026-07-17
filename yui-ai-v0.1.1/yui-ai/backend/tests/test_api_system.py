@@ -12,7 +12,7 @@ async def test_self_endpoint_returns_identity_and_is_read_only(
     assert resp.status_code == 200
     body = resp.json()
     assert body["name"] == "Yui"
-    assert body["version"] == "0.4.0"
+    assert body["version"] == "0.5.0"
     assert body["health"] == "operational"
     assert "create_task" in body["tools_available"]
     # Não há rota de escrita para o Self Model.

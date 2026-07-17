@@ -101,3 +101,56 @@ async def test_interaction_count_increments_per_turn(
         profile = (await session.execute(select(UserProfile))).scalar_one()
         assert profile.interaction_count == 2
         assert profile.last_interaction_at is not None
+
+
+async def test_turn_updates_affective_state(session_factory) -> None:
+    """Fase 3 registra os eventos do turno no estado afetivo persistente."""
+    from app.models.affect import AffectiveState
+
+    user_id = await _create_user(session_factory)
+    core = _core(session_factory, FakeLLM(), FakeLLM())
+
+    await core.process_message(user_id, "free", "finalmente consegui, deu certo!")
+
+    async with session_factory() as session:
+        state = (await session.execute(select(AffectiveState))).scalar_one()
+        assert state.user_id == user_id
+        assert state.joy >= 0.20  # sinal de motivação do turno
+        assert state.warmth > 0.1  # convivência
+
+
+async def test_post_turn_generates_initiatives_when_enabled(
+    session_factory, monkeypatch
+) -> None:
+    """Com a geração ligada, o pós-turno registra iniciativas aprovadas."""
+    from datetime import timedelta
+
+    from app.core.config import get_settings
+    from app.models.base import utcnow
+    from app.models.initiative import InitiativeRecord
+    from app.models.task import Task
+
+    monkeypatch.setenv("INITIATIVE_GENERATION_ENABLED", "true")
+    get_settings.cache_clear()
+    try:
+        user_id = await _create_user(session_factory)
+        async with session_factory() as session:
+            parent = Task(user_id=user_id, title="Aprender IA")
+            session.add(parent)
+            await session.flush()
+            session.add(
+                Task(user_id=user_id, title="Estudar fundamentos", parent_id=parent.id)
+            )
+            await session.flush()
+            parent.updated_at = utcnow() - timedelta(days=40)  # abandonado
+            await session.commit()
+
+        core = _core(session_factory, FakeLLM(), FakeLLM())
+        await core.run_post_turn(user_id, uuid.uuid4(), "olá", "olá!")
+
+        async with session_factory() as session:
+            record = (await session.execute(select(InitiativeRecord))).scalar_one()
+            assert record.kind == "check_in"
+            assert record.status == "pending"
+    finally:
+        get_settings.cache_clear()

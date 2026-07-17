@@ -9,6 +9,9 @@ import os
 
 os.environ.setdefault("MEMORY_EXTRACTION_ENABLED", "false")
 os.environ.setdefault("SUMMARIZATION_ENABLED", "false")
+# Geração de iniciativas em background desligada nos testes (determinismo,
+# como extração/resumo); os testes do serviço a exercitam diretamente.
+os.environ.setdefault("INITIATIVE_GENERATION_ENABLED", "false")
 
 from collections.abc import AsyncGenerator  # noqa: E402
 

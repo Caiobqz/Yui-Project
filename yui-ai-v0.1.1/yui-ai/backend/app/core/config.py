@@ -24,8 +24,8 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    app_name: str = "Yui AI Assistant"
-    version: str = "0.4.0"
+    app_name: str = "Yui AI Companion"
+    version: str = "0.5.0"
     environment: str = "development"
     api_v1_prefix: str = "/api/v1"
 
@@ -86,6 +86,9 @@ class Settings(BaseSettings):
     # Curiosity Engine: sugere no máximo 1 pergunta quando detecta lacunas.
     curiosity_enabled: bool = True
     curiosity_min_interactions: int = 3
+    # Após sugerir uma pergunta, silencia por N interações (v0.5): uma lacuna
+    # estável nunca deve virar a mesma pergunta em todos os turnos.
+    curiosity_min_gap_interactions: int = 4
     # Planos sem progresso há N dias despertam curiosidade.
     plan_stale_days: int = 7
     # Goal Engine: plano parado além disso é considerado abandonado.
@@ -106,9 +109,22 @@ class Settings(BaseSettings):
     ctx_budget_adaptation_chars: int = 1200
     ctx_budget_summary_chars: int = 2400
     ctx_budget_memories_chars: int = 4000
+    ctx_budget_affect_chars: int = 400
 
     # Autonomia (v0.4) — Judgement Engine / Bússola Moral.
     autonomy_enabled: bool = True
+
+    # Companion Core (v0.5) — afeto persistente e iniciativas.
+    # Estados afetivos computacionais (warmth/joy/concern): atualizados na
+    # fase 3 do turno e injetados no prompt como domínio self.
+    affect_enabled: bool = True
+    # Geração de iniciativas no pós-turno (a decisão continua no Judgement
+    # Engine; este flag governa apenas o registro automático em background).
+    initiative_generation_enabled: bool = True
+    # Mesma situação (dedupe_key) não é reproposta dentro desta janela.
+    initiative_cooldown_days: int = 14
+    # Teto de iniciativas pendentes por usuário — iniciativas são RARAS.
+    initiative_max_pending: int = 2
     moral_act_threshold: float = 0.45
     moral_confidence_threshold: float = 0.55
     moral_high_risk_threshold: float = 0.7

@@ -77,3 +77,57 @@ async def test_build_includes_self_world_and_goal_blocks(
     # Identidade (estável) antes de tudo.
     assert prompt.index("Você é Yui") < prompt.index("<modelo_da_yui>")
     assert used == 0
+
+
+async def test_build_includes_affect_and_initiative_blocks(
+    session_factory, db_session
+) -> None:
+    from app.cognition.affect import AffectSnapshot
+
+    user_id = await _user(db_session)
+    await db_session.commit()
+
+    orchestrator = _orchestrator(session_factory)
+    async with session_factory() as session:
+        prompt, _ = await orchestrator.build(
+            session=session,
+            user_id=user_id,
+            text="olá",
+            query_embedding=None,
+            summary=None,
+            adaptation_notes=[],
+            relationship=None,
+            emotional=EmotionalContext(signals=(), guidance=()),
+            curiosity=None,
+            affect=AffectSnapshot(warmth=0.5, joy=0.8, concern=0.0),
+            initiative="Retomar o objetivo 'Voltar a correr'.",
+        )
+
+    # Estado afetivo no domínio SELF; iniciativa como diretiva de estratégia.
+    assert "<estado_afetivo>" in prompt
+    assert "alegria" in prompt
+    assert "Iniciativa própria" in prompt
+    assert "Voltar a correr" in prompt
+
+
+async def test_neutral_affect_adds_no_block(session_factory, db_session) -> None:
+    from app.cognition.affect import AffectSnapshot
+
+    user_id = await _user(db_session)
+    await db_session.commit()
+
+    orchestrator = _orchestrator(session_factory)
+    async with session_factory() as session:
+        prompt, _ = await orchestrator.build(
+            session=session,
+            user_id=user_id,
+            text="olá",
+            query_embedding=None,
+            summary=None,
+            adaptation_notes=[],
+            relationship=None,
+            emotional=EmotionalContext(signals=(), guidance=()),
+            curiosity=None,
+            affect=AffectSnapshot(warmth=0.1, joy=0.0, concern=0.0),
+        )
+    assert "<estado_afetivo>" not in prompt
