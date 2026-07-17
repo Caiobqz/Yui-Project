@@ -88,7 +88,7 @@ uvicorn app.main:app --reload
 ## Qualidade
 
 ```bash
-pytest              # 118 testes
+pytest              # 119 testes
 ruff check app tests alembic
 mypy
 ```
