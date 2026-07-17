@@ -8,7 +8,6 @@ antes de virar ação.
 """
 import uuid
 from dataclasses import dataclass
-from datetime import timedelta
 from typing import Literal
 
 from sqlalchemy import select
@@ -47,25 +46,43 @@ class GoalEngine:
             .order_by(Task.created_at)
         )
         parents = list(result.scalars())
+        if not parents:
+            return []
+
+        # Uma única query para todas as etapas (evita N+1: era uma query por
+        # plano). Agrupa em memória preservando a ordem de posição.
+        parent_ids = [p.id for p in parents]
+        rows = await session.execute(
+            select(Task).where(Task.parent_id.in_(parent_ids)).order_by(Task.position)
+        )
+        by_parent: dict[uuid.UUID, list[Task]] = {}
+        for child in rows.scalars():
+            if child.parent_id is not None:
+                by_parent.setdefault(child.parent_id, []).append(child)
+
         states: list[GoalState] = []
         for parent in parents:
-            children = await self._children(session, parent.id)
+            children = by_parent.get(parent.id, [])
             if not children:
                 continue  # tarefa avulsa, não é um plano/objetivo
             states.append(self._state(parent, children))
         return states
 
-    async def active_goal_terms(
-        self, session: AsyncSession, user_id: uuid.UUID
-    ) -> set[str]:
+    @staticmethod
+    def active_terms(states: list[GoalState]) -> set[str]:
         """Termos dos objetivos ativos/parados — insumo do Attention Manager."""
         terms: set[str] = set()
-        for state in await self.analyze(session, user_id):
+        for state in states:
             if state.status in ("active", "stalled"):
                 terms |= terms_of(state.title)
                 if state.next_step:
                     terms |= terms_of(state.next_step)
         return terms
+
+    async def active_goal_terms(
+        self, session: AsyncSession, user_id: uuid.UUID
+    ) -> set[str]:
+        return self.active_terms(await self.analyze(session, user_id))
 
     async def find_stale_plan(
         self, session: AsyncSession, user_id: uuid.UUID
@@ -109,14 +126,3 @@ class GoalEngine:
             next_step=next_step,
             idle_days=idle_days,
         )
-
-    @staticmethod
-    async def _children(session: AsyncSession, parent_id: uuid.UUID) -> list[Task]:
-        result = await session.execute(
-            select(Task).where(Task.parent_id == parent_id).order_by(Task.position)
-        )
-        return list(result.scalars())
-
-    @staticmethod
-    def _cutoff_days(days: int) -> timedelta:
-        return timedelta(days=days)

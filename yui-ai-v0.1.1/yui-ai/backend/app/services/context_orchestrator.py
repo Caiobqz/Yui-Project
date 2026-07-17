@@ -56,29 +56,17 @@ class ContextOrchestrator:
         user_id: uuid.UUID,
         text: str,
         query_embedding: list[float] | None,
+        attention_ctx: AttentionContext,
     ) -> list[MemoryEntry]:
-        """Recupera candidatas e aplica o Attention Manager (com objetivos e grafo)."""
-        candidates = await MemoryService(session).score_candidates(
-            user_id, text, query_embedding
-        )
-        goal_terms = await self._goals.active_goal_terms(session, user_id)
-        graph_terms: set[str] = set()
-        if goal_terms:
-            graph = await build_knowledge_graph(session, user_id)
-            goal_labels = {
-                s.title
-                for s in await self._goals.analyze(session, user_id)
-                if s.status in ("active", "stalled")
-            }
-            graph_terms = graph.related_terms(goal_labels)
-        selected = self._attention.select(
-            candidates, AttentionContext(goal_terms=goal_terms, graph_terms=graph_terms)
-        )
+        """Recupera candidatas e aplica o Attention Manager (contexto já pronto)."""
+        service = MemoryService(session)
+        candidates = await service.score_candidates(user_id, text, query_embedding)
+        selected = self._attention.select(candidates, attention_ctx)
         for scored in selected:
             METRICS.observe("attention.score", scored.score)
         METRICS.observe("memory.retrieved", len(selected))
         entries = [s.memory for s in selected]
-        await MemoryService(session).touch(entries)
+        await service.touch(entries)
         return entries
 
     async def build(
@@ -96,8 +84,25 @@ class ContextOrchestrator:
         """Monta o system prompt de companhia. Retorna (prompt, memórias_usadas)."""
         settings = get_settings()
 
-        memories = await self.select_memories(session, user_id, text, query_embedding)
+        # Estado dos objetivos calculado UMA vez por turno e reaproveitado
+        # pela atenção, pelo grafo e pelo bloco de objetivos (antes: 3× por turno).
         goal_states = await self._goals.analyze(session, user_id)
+        goal_terms = GoalEngine.active_terms(goal_states)
+        graph_terms: set[str] = set()
+        if goal_terms:
+            graph = await build_knowledge_graph(session, user_id)
+            goal_labels = {
+                s.title for s in goal_states if s.status in ("active", "stalled")
+            }
+            graph_terms = graph.related_terms(goal_labels)
+
+        memories = await self.select_memories(
+            session,
+            user_id,
+            text,
+            query_embedding,
+            AttentionContext(goal_terms=goal_terms, graph_terms=graph_terms),
+        )
         goal_lines = [
             f"{s.title}: {s.done}/{s.total} etapas ({_status_pt(s.status)})"
             + (f"; próxima: {s.next_step}" if s.next_step else "")

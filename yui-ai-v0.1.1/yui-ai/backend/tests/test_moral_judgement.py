@@ -49,6 +49,18 @@ def test_low_benefit_action_is_deferred() -> None:
     assert ev.decision == "defer"
 
 
+def test_unpermitted_action_is_always_declined() -> None:
+    # Portão duro do Permission System: mesmo uma ação excelente é recusada
+    # se a ferramenta não está autorizada.
+    ev = MoralCompass().evaluate(
+        _action(benefit=1.0, risk=0.0, reversibility=1.0, urgency=1.0),
+        alignment=1.0,
+        permitted=False,
+    )
+    assert ev.decision == "decline"
+    assert "não autorizada" in ev.rationale
+
+
 async def _abandoned_plan_user(db_session) -> uuid.UUID:
     user = User(email=f"{uuid.uuid4()}@example.com", hashed_password="h")
     db_session.add(user)

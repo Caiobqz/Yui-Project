@@ -59,6 +59,21 @@ class MoralCompass:
         permitted: bool,
     ) -> MoralEvaluation:
         alignment = _clamp(alignment)
+        # Portão duro do Permission System: uma ação sobre ferramenta não
+        # autorizada é SEMPRE recusada, independentemente do score. A decisão
+        # é certa (confiança 1.0) — não há dúvida de que a Yui não vai agir.
+        if not permitted:
+            return MoralEvaluation(
+                decision="decline",
+                benefit=_clamp(action.benefit),
+                risk=_clamp(action.risk),
+                reversibility=_clamp(action.reversibility),
+                urgency=_clamp(action.urgency),
+                alignment=alignment,
+                confidence=1.0,
+                score=0.0,
+                rationale="ferramenta não autorizada pelo Permission System",
+            )
         # Score determinístico: benefício e alinhamento puxam para agir;
         # risco e (falta de) reversibilidade puxam para a cautela.
         score = (
