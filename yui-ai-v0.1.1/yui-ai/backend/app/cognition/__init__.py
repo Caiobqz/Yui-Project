@@ -1,9 +1,10 @@
 """Yui Cognitive Core — o núcleo cognitivo da Yui (v0.3).
 
-Inspiração: uma assistente analítica, curiosa, protetora e consistente.
-Implementação realista: a Yui NÃO possui consciência, emoções reais nem
-vontade própria — todos os comportamentos abaixo são modelos computacionais
-de interação, determinísticos ou derivados de chamadas de modelo.
+Inspiração: uma companheira analítica, curiosa, protetora e consistente.
+Implementação realista: a Yui NÃO possui consciência nem emoções humanas
+reais — todos os comportamentos abaixo (incluindo afetos e iniciativas,
+v0.5) são modelos computacionais, determinísticos ou derivados de chamadas
+de modelo.
 
     Yui Cognitive Core
       ├── Identity System        cognition/identity.py      (imutável, em código)

@@ -76,6 +76,33 @@ class KnowledgeGraph:
         }
 
 
+async def related_category_terms(
+    session: AsyncSession, user_id: uuid.UUID, goal_labels: set[str]
+) -> set[str]:
+    """Termos das categorias de memória relacionadas aos objetivos dados.
+
+    Caminho LEVE para o turno: equivale a
+    `build_knowledge_graph(...).related_terms(goal_labels)` sem materializar
+    o grafo — que carregaria TODAS as memórias (conteúdo incluso) a cada
+    turno com objetivos ativos. Aqui basta um SELECT DISTINCT de categorias.
+    O grafo completo continua disponível para a rota /knowledge-graph.
+    """
+    if not goal_labels:
+        return set()
+    result = await session.execute(
+        select(MemoryEntry.category)
+        .where(MemoryEntry.user_id == user_id)
+        .distinct()
+    )
+    goal_term_sets = [terms_of(label) for label in goal_labels]
+    terms: set[str] = set()
+    for (category,) in result:
+        category_terms = terms_of(category)
+        if any(category_terms & goal_terms for goal_terms in goal_term_sets):
+            terms |= category_terms
+    return terms
+
+
 async def build_knowledge_graph(
     session: AsyncSession, user_id: uuid.UUID
 ) -> KnowledgeGraph:

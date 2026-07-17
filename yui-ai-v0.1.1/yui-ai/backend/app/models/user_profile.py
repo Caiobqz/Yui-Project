@@ -36,3 +36,8 @@ class UserProfile(Base, UUIDMixin, TimestampMixin):
     last_interaction_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Interação em que a última pergunta de curiosidade foi sugerida —
+    # espaçamento determinístico para a conversa nunca virar interrogatório.
+    last_curiosity_interaction: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )

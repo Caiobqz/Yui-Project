@@ -49,6 +49,39 @@ def test_low_benefit_action_is_deferred() -> None:
     assert ev.decision == "defer"
 
 
+def test_defaults_preserve_v04_scores() -> None:
+    # Sem os sinais novos (vínculo/preocupação), o julgamento é idêntico ao
+    # da v0.4: os defaults são neutros por construção.
+    base = MoralCompass().evaluate(_action(), alignment=0.6, permitted=True)
+    explicit = MoralCompass().evaluate(
+        _action(), alignment=0.6, permitted=True, relationship=0.5, concern=0.0
+    )
+    assert base == explicit
+
+
+def test_concern_raises_effective_urgency_score() -> None:
+    calm = MoralCompass().evaluate(
+        _action(urgency=0.2), alignment=0.6, permitted=True
+    )
+    worried = MoralCompass().evaluate(
+        _action(urgency=0.2), alignment=0.6, permitted=True, concern=1.0
+    )
+    # A preocupação empurra para proteger (score maior), sem tocar o risco.
+    assert worried.score > calm.score
+    assert worried.risk == calm.risk
+
+
+def test_relationship_modulates_confidence() -> None:
+    new_bond = MoralCompass().evaluate(
+        _action(), alignment=0.6, permitted=True, relationship=0.0
+    )
+    old_bond = MoralCompass().evaluate(
+        _action(), alignment=0.6, permitted=True, relationship=1.0
+    )
+    # Relação recém-começada pede prudência extra; convivência dá base.
+    assert new_bond.confidence < old_bond.confidence
+
+
 def test_unpermitted_action_is_always_declined() -> None:
     # Portão duro do Permission System: mesmo uma ação excelente é recusada
     # se a ferramenta não está autorizada.

@@ -15,13 +15,18 @@ def test_identity_is_immutable() -> None:
 def test_identity_prompt_contains_all_sections() -> None:
     prompt = identity_prompt()
     assert "Você é Yui" in prompt
+    # v0.5: companheira (presença), nunca ferramenta/assistente.
+    assert "companheira" in prompt
+    assert "assistente" not in prompt
     assert "Propósito:" in prompt
-    assert "proteger sua privacidade" in prompt
+    assert "Acompanhar o usuário" in prompt
     assert "Valores:" in prompt
+    assert "Privacidade do usuário" in prompt
     assert "Limitações:" in prompt
     assert "Regras invioláveis:" in prompt
-    # Realismo exigido: nada de consciência/emoções reais.
-    assert "modelos computacionais" in prompt
+    # Realismo exigido: nada de consciência/emoções humanas reais.
+    assert "estados computacionais" in prompt
+    assert "não possui consciência" in prompt.lower()
 
 
 def test_style_prompt_contains_traits_and_style() -> None:

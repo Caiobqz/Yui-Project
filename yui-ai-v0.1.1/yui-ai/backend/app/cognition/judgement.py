@@ -34,6 +34,9 @@ class Initiative:
     kind: str
     description: str
     evaluation: MoralEvaluation
+    # Identidade estável da situação — usada pelo registro persistente para
+    # nunca repropor a mesma iniciativa dentro do cooldown.
+    dedupe_key: str | None = None
 
 
 class JudgementEngine:
@@ -46,13 +49,20 @@ class JudgementEngine:
         self._goals = goal_engine or GoalEngine()
 
     def deliberate(
-        self, action: ProposedAction, *, alignment: float
+        self,
+        action: ProposedAction,
+        *,
+        alignment: float,
+        relationship: float = 0.5,
+        concern: float = 0.0,
     ) -> MoralEvaluation:
         """Delibera sobre UMA ação candidata e registra a decisão."""
         evaluation = self._compass.evaluate(
             action,
             alignment=alignment,
             permitted=permitted_by_default(action.tool_name),
+            relationship=relationship,
+            concern=concern,
         )
         METRICS.incr(f"judgement.decision.{evaluation.decision}")
         METRICS.observe("judgement.confidence", evaluation.confidence)
@@ -61,12 +71,19 @@ class JudgementEngine:
         return evaluation
 
     async def propose_initiatives(
-        self, session: AsyncSession, user_id: uuid.UUID
+        self,
+        session: AsyncSession,
+        user_id: uuid.UUID,
+        *,
+        relationship: float = 0.5,
+        concern: float = 0.0,
     ) -> list[Initiative]:
         """Gera ações candidatas a partir dos objetivos e julga cada uma.
 
         Retorna apenas as que a Bússola Moral aprovou para ação autônoma
-        (decision == "proceed"). Determinístico de ponta a ponta.
+        (decision == "proceed"). Determinístico de ponta a ponta. Os sinais
+        de vínculo (`relationship`) e preocupação (`concern`) entram no
+        julgamento (v0.5); os defaults são neutros.
         """
         settings = get_settings()
         if not settings.autonomy_enabled:
@@ -77,13 +94,19 @@ class JudgementEngine:
         approved: list[Initiative] = []
         for action in _candidate_actions(states):
             alignment = _alignment(action, states, goal_terms)
-            evaluation = self.deliberate(action, alignment=alignment)
+            evaluation = self.deliberate(
+                action,
+                alignment=alignment,
+                relationship=relationship,
+                concern=concern,
+            )
             if evaluation.decision == "proceed":
                 approved.append(
                     Initiative(
                         kind=action.kind,
                         description=action.description,
                         evaluation=evaluation,
+                        dedupe_key=action.dedupe_key,
                     )
                 )
         if approved:
@@ -107,6 +130,7 @@ def _candidate_actions(states: list[GoalState]) -> list[ProposedAction]:
                     risk=0.1,
                     reversibility=1.0,
                     urgency=0.5,
+                    dedupe_key=f"check_in:{state.plan_id}",
                 )
             )
         elif state.status == "active" and state.total and state.done == state.total - 1:
@@ -122,6 +146,7 @@ def _candidate_actions(states: list[GoalState]) -> list[ProposedAction]:
                     risk=0.05,
                     reversibility=1.0,
                     urgency=0.4,
+                    dedupe_key=f"encouragement:{state.plan_id}",
                 )
             )
     return actions
