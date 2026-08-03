@@ -1,0 +1,9 @@
+# Extra opcional: LLM_PROVIDER=llama_cpp (inferência 100% local via GGUF).
+# Instalação: pip install -r requirements-local-llama.txt
+#
+# llama-cpp-python compila componentes nativos (CMake + compilador C/C++).
+# Em Debian/Ubuntu: apt install build-essential cmake
+# Para offload em GPU (CUDA/Metal/ROCm), consulte a documentação do pacote
+# para as variáveis de ambiente de build (ex.: CMAKE_ARGS="-DGGML_CUDA=on").
+-r requirements.txt
+llama-cpp-python>=0.3.0

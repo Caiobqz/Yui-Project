@@ -1,0 +1,9 @@
+# Extra opcional: EMBEDDING_PROVIDER=sentence_transformers (embeddings
+# locais, offline após o primeiro download do modelo).
+# Instalação: pip install -r requirements-local-embeddings.txt
+#
+# Traz PyTorch como dependência transitiva — instalação pesada (centenas
+# de MB). O primeiro uso de um modelo baixa os pesos do Hugging Face Hub;
+# usos seguintes funcionam offline.
+-r requirements.txt
+sentence-transformers>=3.0.0

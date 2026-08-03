@@ -1,0 +1,18 @@
+# Ambiente de desenvolvimento/CI: inclui os backends comerciais (para os
+# testes de factory exercitarem também os ramos 'claude'/'openai') mas
+# DELIBERADAMENTE NÃO inclui llama-cpp-python nem sentence-transformers —
+# são dependências pesadas (compilação nativa / download de modelo) e a
+# suíte padrão testa esses providers via mock dos módulos, nunca com a
+# biblioteca real instalada (ver tests/test_llama_cpp_provider.py e
+# tests/test_sentence_transformers_provider.py). Testes marcados
+# 'requires_gguf'/'requires_ollama' são pulados automaticamente quando as
+# dependências reais não estão presentes.
+-r requirements.txt
+-r requirements-anthropic.txt
+-r requirements-openai.txt
+pytest>=8.3.0
+pytest-asyncio>=0.24.0
+aiosqlite>=0.20.0
+ruff>=0.6.0
+mypy>=1.11.0
+types-PyYAML>=6.0.2

@@ -1,0 +1,4 @@
+# Extra opcional: LLM_PROVIDER=claude (principal e/ou utilitário).
+# Instalação: pip install -r requirements-anthropic.txt
+-r requirements.txt
+anthropic>=0.40.0

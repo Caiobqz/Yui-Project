@@ -1,0 +1,4 @@
+# Extra opcional: LLM_PROVIDER=openai e/ou EMBEDDING_PROVIDER=openai.
+# Instalação: pip install -r requirements-openai.txt
+-r requirements.txt
+openai>=1.55.0

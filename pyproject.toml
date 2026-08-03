@@ -1,0 +1,44 @@
+[project]
+name = "yui-backend"
+version = "0.1.2"
+description = "Backend da Yui AI Assistant"
+requires-python = ">=3.11"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+extend-exclude = ["alembic/versions"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # bugbear
+    "SIM", # simplificações
+]
+ignore = [
+    "E501", # linhas longas pontuais (strings de erro/documentação)
+]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["app"]
+check_untyped_defs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+# Markers para testes de integração real com modelos locais — não rodam por
+# padrão (ver comando na seção de testes do README). A suíte default nunca
+# exige GGUF, Ollama, GPU ou internet.
+markers = [
+    "integration: teste de integração mais pesado (fora do padrão de CI)",
+    "requires_ollama: exige uma instância local do Ollama em execução",
+    "requires_gguf: exige um arquivo de modelo GGUF real no disco",
+]
