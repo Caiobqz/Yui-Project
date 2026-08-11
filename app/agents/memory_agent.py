@@ -174,7 +174,7 @@ class MemoryAgent:
             service = MemoryService(session)
             duplicate = await service.find_duplicate(user_id, content, embedding)
             if duplicate is not None:
-                service.reinforce(duplicate, confidence)
+                service.reinforce(duplicate, content.strip(), confidence)
                 await session.commit()
                 logger.debug("Memória consolidada (reforço em %s).", duplicate.id)
                 return duplicate, False
