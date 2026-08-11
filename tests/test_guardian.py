@@ -63,6 +63,30 @@ def test_memory_screening_blocks_secrets() -> None:
     assert guardian.screen_memory_content("") is not None
 
 
+def test_memory_screening_blocks_additional_credential_formats() -> None:
+    """Sinônimo em PT e formatos de token comuns (ver hardening)."""
+    guardian = GuardianAgent()
+    assert guardian.screen_memory_content("aqui está minha chave da api") is not None
+    assert guardian.screen_memory_content("essa é minha chave secreta") is not None
+    assert (
+        guardian.screen_memory_content("ghp_abcdefghijklmnopqrstuvwxyz012345") is not None
+    )
+    assert guardian.screen_memory_content("AKIAABCDEFGHIJKLMNOP") is not None
+    assert (
+        guardian.screen_memory_content(
+            "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dQw4w9WgXcQrb9F"
+        )
+        is not None
+    )
+
+
+def test_memory_screening_does_not_false_positive_on_the_word_chave() -> None:
+    """'Chave' sozinha (sem qualificador de credencial) não deve bloquear."""
+    guardian = GuardianAgent()
+    assert guardian.screen_memory_content("perdeu a chave de casa de novo") is None
+    assert guardian.screen_memory_content("comprou uma chave de fenda nova") is None
+
+
 def test_tool_result_clamp() -> None:
     guardian = GuardianAgent()
     small = "resultado"

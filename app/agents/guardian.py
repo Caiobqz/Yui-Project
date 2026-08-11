@@ -25,8 +25,13 @@ _MAX_MEMORY_CHARS = 1000
 _SECRET_PATTERNS = (
     re.compile(r"(?i)\b(senha|password|passwd)\b\s*[:=]?"),
     re.compile(r"(?i)\bapi[-_ ]?key\b\s*[:=]?"),
+    re.compile(r"(?i)\bchave\b.{0,12}\b(api|secreta|privada|acesso)\b"),
     re.compile(r"(?i)\b(token|secret)\b\s*[:=]"),
     re.compile(r"\bsk-[A-Za-z0-9_-]{16,}\b"),
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b"),      # tokens GitHub (PAT/OAuth/App)
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),                 # AWS access key id
+    re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"),    # tokens Slack
+    re.compile(r"\bey[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"),  # JWT
     re.compile(r"\b\d{13,19}\b"),
     re.compile(r"(?i)-----BEGIN [A-Z ]*PRIVATE KEY-----"),
 )
