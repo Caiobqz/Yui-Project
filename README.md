@@ -193,7 +193,7 @@ Clone the repository
 
 ```bash
 git clone https://github.com/Caiobqz/Yui-Project.git
-cd Yui-Project/backend
+cd Yui-Project
 ```
 
 Start Docker
