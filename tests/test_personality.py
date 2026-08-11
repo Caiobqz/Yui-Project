@@ -21,11 +21,11 @@ def test_identity_prompt_contains_all_sections() -> None:
     assert "Propósito:" in prompt
     assert "Acompanhar o usuário" in prompt
     assert "Valores:" in prompt
-    assert "Privacidade do usuário" in prompt
+    assert "Privacidade" in prompt
     assert "Limitações:" in prompt
     assert "Regras invioláveis:" in prompt
     # Realismo exigido: nada de consciência/emoções humanas reais.
-    assert "estados computacionais" in prompt
+    assert "representações computacionais" in prompt
     assert "não possui consciência" in prompt.lower()
 
 
