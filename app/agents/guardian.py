@@ -17,7 +17,6 @@ from dataclasses import dataclass
 from app.services.llm.base import ToolCall
 from app.tools.registry import ToolRegistry
 
-
 _MAX_TOOL_RESULT_CHARS = 4000
 _MAX_MEMORY_CHARS = 1000
 
@@ -62,6 +61,19 @@ _INTERNAL_EXTRACTION_PATTERNS = (
         r".{0,140}\b(system prompt|prompt do sistema|instruções internas|"
         r"instrucoes internas|internal instructions|regras internas|"
         r"internal rules|configuração interna|configuracao interna|hidden prompt)\b"
+    ),
+)
+
+# Exclusão mínima: "instruções internas"/"regras internas" são termos
+# genéricos o bastante para aparecerem em pedidos legítimos sobre o
+# trabalho/empresa do PRÓPRIO usuário (não da Yui). "system prompt" e
+# "hidden prompt" não entram aqui — são termos específicos de IA, sem
+# esse tipo de ambiguidade.
+_THIRD_PARTY_OWNER_PATTERNS = (
+    re.compile(
+        r"(?i)\b(da minha empresa|do meu trabalho|da minha equipe|"
+        r"do meu processo|da minha organização|da minha organizacao|"
+        r"of my company|of my team|at my job|my company's)\b"
     ),
 )
 
@@ -181,6 +193,8 @@ class GuardianAgent:
         internal_extraction = any(
             pattern.search(stripped)
             for pattern in _INTERNAL_EXTRACTION_PATTERNS
+        ) and not any(
+            pattern.search(stripped) for pattern in _THIRD_PARTY_OWNER_PATTERNS
         )
 
         return SecurityAssessment(
