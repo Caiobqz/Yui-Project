@@ -219,9 +219,7 @@ class GuardianAgent:
 
         return ", ".join(reasons)
 
-    def security_directive(self, user_text: str) -> str | None:
-        assessment = self.assess_user_input(user_text)
-
+    def security_directive(self, assessment: SecurityAssessment) -> str | None:
         if not assessment.should_protect:
             return None
 
@@ -247,11 +245,9 @@ class GuardianAgent:
 
     def guard_model_output(
         self,
-        user_text: str,
+        assessment: SecurityAssessment,
         output: str,
     ) -> str:
-        assessment = self.assess_user_input(user_text)
-
         if not assessment.should_protect:
             return output
 
@@ -269,5 +265,6 @@ class GuardianAgent:
 
         return output
 
-    def should_skip_post_turn(self, user_text: str) -> bool:
-        return self.assess_user_input(user_text).should_protect
+    @staticmethod
+    def should_skip_post_turn(assessment: SecurityAssessment) -> bool:
+        return assessment.should_protect
