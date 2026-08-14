@@ -141,6 +141,7 @@ class YuiCore:
         await self._rate_limiter.enforce(user_id, plan)
 
         setup = await self._prepare_turn(user_id, text, conversation_id)
+        security_assessment = self._guardian.assess_user_input(text)
 
         # Fase 2 — loop agêntico, sem conexão de banco aberta.
         responses: list[LLMResponse] = []
@@ -154,12 +155,21 @@ class YuiCore:
             )
             responses.append(response)
             if not response.tool_calls:
-                final_text = response.content
+                final_text = self._guardian.guard_model_output(
+                    text,
+                    response.content,
+                )
                 break
             await self._handle_tool_calls(ctx, setup, messages, response)
 
         await self._finalize_turn(user_id, setup, text, final_text, responses)
-        self._schedule_post_turn(user_id, setup.conversation_id, text, final_text)
+        if not security_assessment.should_protect:
+            self._schedule_post_turn(
+                user_id,
+                setup.conversation_id,
+                text,
+                final_text,
+            )
 
         return YuiReply(
             conversation_id=setup.conversation_id,
@@ -184,6 +194,7 @@ class YuiCore:
         await self._rate_limiter.enforce(user_id, plan)
 
         setup = await self._prepare_turn(user_id, text, conversation_id)
+        security_assessment = self._guardian.assess_user_input(text)
 
         responses: list[LLMResponse] = []
         messages = list(setup.messages)
@@ -192,18 +203,23 @@ class YuiCore:
         final_text = _FALLBACK_REPLY
         for _ in range(settings.llm_max_tool_iterations):
             response: LLMResponse | None = None
+            buffered_text = ""
             async for chunk in self._llm.generate_stream(
                 setup.system_prompt, messages, tools=tools
             ):
                 if chunk.delta:
-                    yield {"type": "delta", "text": chunk.delta}
+                    buffered_text += chunk.delta
                 if chunk.response is not None:
                     response = chunk.response
             if response is None:
                 raise RuntimeError("Streaming terminou sem resposta consolidada.")
             responses.append(response)
             if not response.tool_calls:
-                final_text = response.content
+                final_text = self._guardian.guard_model_output(
+                    text,
+                    response.content or buffered_text,
+                )
+                yield {"type": "delta", "text": final_text}
                 break
             yield {
                 "type": "tool",
@@ -212,7 +228,13 @@ class YuiCore:
             await self._handle_tool_calls(ctx, setup, messages, response)
 
         await self._finalize_turn(user_id, setup, text, final_text, responses)
-        self._schedule_post_turn(user_id, setup.conversation_id, text, final_text)
+        if not security_assessment.should_protect:
+            self._schedule_post_turn(
+                user_id,
+                setup.conversation_id,
+                text,
+                final_text,
+            )
 
         yield {
             "type": "done",
@@ -312,11 +334,21 @@ class YuiCore:
         settings = get_settings()
         started = time.monotonic()
 
+        security_assessment = self._guardian.assess_user_input(text)
+        security_directive = self._guardian.security_directive(text)
+
         # Contexto emocional: heurística pura, sem custo.
         emotional = analyze_emotional_context(text)
 
+        # Ataques explícitos não devem influenciar a seleção de memórias.
+        retrieval_text = (
+            text
+            if not security_assessment.should_protect
+            else "segurança, identidade e privacidade da Yui"
+        )
+
         # Fase 0 — embedding da consulta ANTES de abrir a sessão.
-        query_embedding = await self._memory_agent.embed_query(text)
+        query_embedding = await self._memory_agent.embed_query(retrieval_text)
 
         # Fase 1 — leitura do estado cognitivo (conexão curta). O Context
         # Orchestrator monta o prompt de companhia (atenção + objetivos +
@@ -353,7 +385,7 @@ class YuiCore:
             system_prompt, memories_used = await self._orchestrator.build(
                 session=session,
                 user_id=user_id,
-                text=text,
+                text=retrieval_text,
                 query_embedding=query_embedding,
                 summary=summary,
                 adaptation_notes=adaptation_notes,
@@ -368,6 +400,9 @@ class YuiCore:
                     else None
                 ),
             )
+            if security_directive:
+                system_prompt += security_directive
+
             if curiosity is not None:
                 # Registra a sugestão para o espaçamento da curiosidade
                 # (a conversa nunca vira interrogatório).
