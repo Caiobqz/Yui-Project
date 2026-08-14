@@ -1,8 +1,8 @@
 [project]
 name = "yui-backend"
-version = "0.1.2"
+version = "0.5.1"
 description = "Backend da Yui AI Assistant"
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.12"
 
 [tool.ruff]
 target-version = "py311"
