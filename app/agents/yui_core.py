@@ -30,7 +30,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.agents.guardian import GuardianAgent
+from app.agents.guardian import GuardianAgent, SecurityAssessment
 from app.agents.memory_agent import MemoryAgent
 from app.agents.task_agent import TaskAgent
 from app.cognition.affect import AffectService
@@ -87,6 +87,10 @@ class _TurnSetup:
     messages: list[ChatMessage]
     memories_used: int
     emotional: EmotionalContext
+    # Calculado uma única vez por turno em _prepare_turn e reutilizado em
+    # todo o resto do fluxo (directive, retrieval defensivo, output guard,
+    # decisão de pós-turno, streaming) — ver GuardianAgent.assess_user_input.
+    security: SecurityAssessment
     permission_overrides: dict[str, bool] = field(default_factory=dict)
     # Iniciativa própria pendente injetada neste turno (marcada como
     # entregue na fase 3 — a Yui oferece o assunto uma vez, nunca insiste).
@@ -154,12 +158,21 @@ class YuiCore:
             )
             responses.append(response)
             if not response.tool_calls:
-                final_text = response.content
+                final_text = self._guardian.guard_model_output(
+                    setup.security,
+                    response.content,
+                )
                 break
             await self._handle_tool_calls(ctx, setup, messages, response)
 
         await self._finalize_turn(user_id, setup, text, final_text, responses)
-        self._schedule_post_turn(user_id, setup.conversation_id, text, final_text)
+        if not self._guardian.should_skip_post_turn(setup.security):
+            self._schedule_post_turn(
+                user_id,
+                setup.conversation_id,
+                text,
+                final_text,
+            )
 
         return YuiReply(
             conversation_id=setup.conversation_id,
@@ -179,11 +192,24 @@ class YuiCore:
 
         Eventos: {"type": "delta", "text"} | {"type": "tool", "tools"} |
         {"type": "done", ...}. Erros são tratados pela rota (SSE).
+
+        Turno NORMAL (setup.security.should_protect é False): streaming
+        incremental de verdade — cada delta do provedor é emitido assim
+        que chega, preservando a UX de resposta em tempo real.
+
+        Turno SUSPEITO (setup.security.should_protect é True): nenhum
+        delta é emitido durante a geração — o texto é bufferizado
+        internamente, e só depois da resposta consolidada e validada por
+        guard_model_output() é que UM único evento de conteúdo sai pro
+        cliente. Isso garante que texto ainda não validado nunca chega a
+        ser exibido, ao custo de não haver streaming incremental nesse
+        turno específico (aceitável: turnos suspeitos são raros).
         """
         settings = get_settings()
         await self._rate_limiter.enforce(user_id, plan)
 
         setup = await self._prepare_turn(user_id, text, conversation_id)
+        suspicious = setup.security.should_protect
 
         responses: list[LLMResponse] = []
         messages = list(setup.messages)
@@ -192,18 +218,34 @@ class YuiCore:
         final_text = _FALLBACK_REPLY
         for _ in range(settings.llm_max_tool_iterations):
             response: LLMResponse | None = None
+            buffered_text = ""
             async for chunk in self._llm.generate_stream(
                 setup.system_prompt, messages, tools=tools
             ):
                 if chunk.delta:
-                    yield {"type": "delta", "text": chunk.delta}
+                    buffered_text += chunk.delta
+                    if not suspicious:
+                        # Turno normal: emite incrementalmente, sem esperar
+                        # o resto da geração.
+                        yield {"type": "delta", "text": chunk.delta}
                 if chunk.response is not None:
                     response = chunk.response
             if response is None:
                 raise RuntimeError("Streaming terminou sem resposta consolidada.")
             responses.append(response)
             if not response.tool_calls:
-                final_text = response.content
+                final_text = self._guardian.guard_model_output(
+                    setup.security,
+                    response.content or buffered_text,
+                )
+                if suspicious:
+                    # Só agora, com o texto consolidado E validado, algo
+                    # chega ao cliente pela primeira vez neste turno.
+                    yield {"type": "delta", "text": final_text}
+                # Turno normal: nada a emitir aqui — o texto já foi todo
+                # entregue incrementalmente acima (guard_model_output é
+                # no-op quando should_protect é False, então final_text já
+                # é exatamente o que os deltas somaram).
                 break
             yield {
                 "type": "tool",
@@ -212,7 +254,13 @@ class YuiCore:
             await self._handle_tool_calls(ctx, setup, messages, response)
 
         await self._finalize_turn(user_id, setup, text, final_text, responses)
-        self._schedule_post_turn(user_id, setup.conversation_id, text, final_text)
+        if not self._guardian.should_skip_post_turn(setup.security):
+            self._schedule_post_turn(
+                user_id,
+                setup.conversation_id,
+                text,
+                final_text,
+            )
 
         yield {
             "type": "done",
@@ -312,11 +360,21 @@ class YuiCore:
         settings = get_settings()
         started = time.monotonic()
 
+        security = self._guardian.assess_user_input(text)
+        security_directive = self._guardian.security_directive(security)
+
         # Contexto emocional: heurística pura, sem custo.
         emotional = analyze_emotional_context(text)
 
+        # Ataques explícitos não devem influenciar a seleção de memórias.
+        retrieval_text = (
+            text
+            if not security.should_protect
+            else "segurança, identidade e privacidade da Yui"
+        )
+
         # Fase 0 — embedding da consulta ANTES de abrir a sessão.
-        query_embedding = await self._memory_agent.embed_query(text)
+        query_embedding = await self._memory_agent.embed_query(retrieval_text)
 
         # Fase 1 — leitura do estado cognitivo (conexão curta). O Context
         # Orchestrator monta o prompt de companhia (atenção + objetivos +
@@ -353,7 +411,7 @@ class YuiCore:
             system_prompt, memories_used = await self._orchestrator.build(
                 session=session,
                 user_id=user_id,
-                text=text,
+                text=retrieval_text,
                 query_embedding=query_embedding,
                 summary=summary,
                 adaptation_notes=adaptation_notes,
@@ -368,6 +426,9 @@ class YuiCore:
                     else None
                 ),
             )
+            if security_directive:
+                system_prompt += security_directive
+
             if curiosity is not None:
                 # Registra a sugestão para o espaçamento da curiosidade
                 # (a conversa nunca vira interrogatório).
@@ -387,6 +448,7 @@ class YuiCore:
             messages=messages,
             memories_used=memories_used,
             emotional=emotional,
+            security=security,
             permission_overrides=permission_overrides,
             initiative_id=(
                 pending_initiative.id if pending_initiative is not None else None

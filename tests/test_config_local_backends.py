@@ -30,7 +30,7 @@ def test_llama_cpp_relative_path_resolved_from_base_dir() -> None:
     resolved = settings.resolved_llm_model_path
     assert resolved is not None
     assert resolved.is_absolute()
-    assert str(resolved).endswith("models/qwen.gguf")
+    assert resolved.parts[-2:] == ("models", "qwen.gguf")
 
 
 # --- Ollama ----------------------------------------------------------------

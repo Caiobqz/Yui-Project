@@ -66,7 +66,8 @@ async def test_analysis_produces_typed_memories_and_adaptation(session_factory) 
 
 
 async def test_duplicate_candidate_reinforces_existing_memory(session_factory) -> None:
-    """Consolidação: informação reconfirmada fortalece a memória, não duplica."""
+    """Consolidação: informação reconfirmada fortalece a memória, não duplica
+    — e passa a valer o texto mais recente (ver fix em MemoryService.reinforce)."""
     user_id = await _create_user(session_factory)
     same_vector = [1.0, 0.0, 0.0, 0.0]
     embeddings = FakeEmbeddings(
@@ -103,9 +104,112 @@ async def test_duplicate_candidate_reinforces_existing_memory(session_factory) -
 
     async with session_factory() as session:
         entry = (await session.execute(select(MemoryEntry))).scalar_one()
-        assert entry.usage_count == 1  # ...mas reforçou a existente
+        assert entry.id == first.id  # ...mesma linha, sem duplicata
+        assert entry.content == "Prefere estudar no período noturno"  # texto atualizado
+        assert entry.usage_count == 1  # reforçou a existente
         assert entry.confidence == 0.95
         assert entry.last_used_at is not None
+
+
+async def test_updated_preference_replaces_stale_content(session_factory) -> None:
+    """Atualização real do mesmo atributo: jogo favorito muda de Minecraft
+    para Cyberpunk 2077. Antes do fix, `reinforce()` mantinha o texto antigo
+    ("Minecraft") e só incrementava confiança/uso — a preferência nova era
+    descartada silenciosamente. Duas frases quase idênticas (mesmo template,
+    só a entidade muda) tendem a ter embedding muito próximo, cruzando o
+    duplicate_threshold e caindo no mesmo caminho de reforço testado acima;
+    aqui fixamos esse vetor alto de propósito para exercitar exatamente esse
+    caminho."""
+    user_id = await _create_user(session_factory)
+    same_vector = [0.0, 1.0, 0.0, 0.0]
+    embeddings = FakeEmbeddings(
+        mapping={
+            "Meu jogo favorito é Minecraft": same_vector,
+            "Meu jogo favorito é Cyberpunk 2077": same_vector,
+        },
+        dimension=4,
+    )
+    agent = MemoryAgent(FakeLLM(), embeddings, session_factory)
+
+    original = await agent.remember(
+        user_id, "Meu jogo favorito é Minecraft", category="preferencias", confidence=0.8
+    )
+    assert original is not None
+
+    analysis_memories, _ = parse_analysis(
+        json.dumps(
+            {
+                "memories": [
+                    {
+                        "content": "Meu jogo favorito é Cyberpunk 2077",
+                        "category": "preferencias",
+                        "type": "semantic",
+                        "importance": 0.5,
+                        "confidence": 0.85,
+                    }
+                ]
+            }
+        )
+    )
+    created = await agent.store_candidates(user_id, analysis_memories)
+    assert created == 0  # consolidou na existente, não criou uma segunda
+
+    async with session_factory() as session:
+        entries = (await session.execute(select(MemoryEntry))).scalars().all()
+        assert len(entries) == 1  # nunca existem as duas ao mesmo tempo
+        entry = entries[0]
+        assert entry.content == "Meu jogo favorito é Cyberpunk 2077"
+        assert "Minecraft" not in entry.content
+        # usage_count/confidence continuam sendo atualizados normalmente
+        assert entry.usage_count == 1
+        assert entry.confidence == 0.85
+
+
+async def test_dissimilar_memories_in_same_category_are_not_merged(session_factory) -> None:
+    """Memórias relacionadas (mesma categoria) porém semanticamente
+    distintas: o fix em reinforce() não deve fazer o sistema ficar
+    'merge-feliz'. Embedding distante (abaixo do duplicate_threshold)
+    continua coexistindo como entradas separadas — nenhuma sobrescreve a
+    outra."""
+    user_id = await _create_user(session_factory)
+    embeddings = FakeEmbeddings(
+        mapping={
+            "Gosta de café pela manhã": [1.0, 0.0, 0.0, 0.0],
+            "Tem um irmão mais novo": [0.0, 0.0, 0.0, 1.0],  # ortogonal: sim≈0
+        },
+        dimension=4,
+    )
+    agent = MemoryAgent(FakeLLM(), embeddings, session_factory)
+
+    first = await agent.remember(
+        user_id, "Gosta de café pela manhã", category="preferencias", confidence=0.8
+    )
+    assert first is not None
+
+    analysis_memories, _ = parse_analysis(
+        json.dumps(
+            {
+                "memories": [
+                    {
+                        "content": "Tem um irmão mais novo",
+                        "category": "preferencias",  # mesma categoria, fato diferente
+                        "type": "semantic",
+                        "importance": 0.5,
+                        "confidence": 0.8,
+                    }
+                ]
+            }
+        )
+    )
+    created = await agent.store_candidates(user_id, analysis_memories)
+    assert created == 1  # criou uma segunda entrada, não reforçou a primeira
+
+    async with session_factory() as session:
+        entries = (await session.execute(select(MemoryEntry))).scalars().all()
+        contents = {e.content for e in entries}
+        assert contents == {"Gosta de café pela manhã", "Tem um irmão mais novo"}
+        original = next(e for e in entries if e.content == "Gosta de café pela manhã")
+        assert original.usage_count == 0  # não foi tocada pelo candidato não-relacionado
 
 
 async def test_candidates_rejected_by_guardian_or_confidence(session_factory) -> None:

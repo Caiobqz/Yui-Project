@@ -1,5 +1,10 @@
 # Auditoria Técnica — Yui AI Assistant v0.1.1
 
+> **Nota de consolidação (2026-08-14):** os caminhos abaixo registram a
+> estrutura existente quando esta auditoria foi escrita. O projeto executável
+> foi posteriormente consolidado na raiz; a cópia versionada
+> `yui-ai-v0.1.1/` foi removida. Consulte `CONSOLIDACAO.md`.
+
 *Auditoria realizada em 2026-07-12. Escopo: 100% do código em `yui-ai-v0.1.1/yui-ai/backend`, verificado com execução real da suíte de testes (8/8 passam) e validação de boot da aplicação.*
 
 ---

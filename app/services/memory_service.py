@@ -124,12 +124,28 @@ class MemoryService:
         return entry
 
     @staticmethod
-    def reinforce(entry: MemoryEntry, confidence: float = 1.0) -> None:
+    def reinforce(entry: MemoryEntry, content: str, confidence: float = 1.0) -> None:
         """Consolidação: uma informação reconfirmada fica mais forte.
 
         Chamado quando a extração encontra uma memória equivalente à
-        candidata — em vez de descartar, reforça a existente.
+        candidata — em vez de duplicar, reforça a existente.
+
+        O `content` da candidata SUBSTITUI o texto salvo. Duas entradas só
+        chegam aqui por serem semanticamente equivalentes (ver
+        `find_duplicate`), mas "equivalente" cobre tanto uma reformulação
+        (mesma informação, texto novo) quanto uma ATUALIZAÇÃO de um
+        atributo com valor novo (ex.: jogo/cor/cargo favorito mudou) — os
+        dois casos têm alta similaridade com o texto antigo. Manter o texto
+        mais ANTIGO nesses casos é o problema: uma preferência atualizada
+        ficaria salva com o valor desatualizado, e ainda mais reforçada
+        (confiança/recência maiores) a cada reconfirmação — o inverso do
+        pretendido. Preservar o texto mais RECENTE resolve os dois casos
+        sem precisar distinguir "reformulação" de "atualização" (uma
+        contradição semântica com baixa similaridade textual, abaixo do
+        threshold de duplicidade, ainda não é coberta por este método —
+        ver observação na auditoria).
         """
+        entry.content = content
         entry.usage_count += 1
         entry.confidence = max(entry.confidence, min(1.0, confidence))
         entry.last_used_at = utcnow()

@@ -13,6 +13,9 @@ __pycache__/
 # Logs
 *.log
 
+# Pacotes gerados
+*.zip
+
 # IDE
 .vscode/
 .idea/
