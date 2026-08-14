@@ -66,6 +66,13 @@ Core Status
 | Voice | 📅 Planned |
 | Mobile Access | 📅 Planned |
 
+## Canonical source tree
+
+The runnable project now lives only at the repository root (`app/`,
+`tests/`, `alembic/` and the root configuration files). The legacy
+versioned backend copy was removed during the August 2026 consolidation.
+See [`CONSOLIDACAO.md`](CONSOLIDACAO.md) for provenance and validation details.
+
 ---
 
 # Features
