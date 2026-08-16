@@ -27,6 +27,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
 
+from redis.exceptions import RedisError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -526,13 +527,20 @@ class YuiCore:
             await session.commit()
 
         # Cache de curto prazo (par gravado atomicamente) e contador de tokens.
-        await self._short_term.append_many(
-            str(conversation_id),
-            [
-                ChatMessage(role="user", content=user_text),
-                ChatMessage(role="assistant", content=assistant_text),
-            ],
-        )
+        try:
+            await self._short_term.append_many(
+                str(conversation_id),
+                [
+                    ChatMessage(role="user", content=user_text),
+                    ChatMessage(role="assistant", content=assistant_text),
+                ],
+            )
+        except RedisError as exc:
+            logger.warning(
+                "Turno persistido no PostgreSQL, mas o cache de histórico não "
+                "pôde ser atualizado (redis_error=%s).",
+                type(exc).__name__,
+            )
         total_tokens = sum(
             (r.input_tokens or 0) + (r.output_tokens or 0) for r in responses
         )

@@ -12,6 +12,7 @@ import logging
 import uuid
 from typing import Literal, cast
 
+from redis.exceptions import RedisError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -64,7 +65,15 @@ class HistoryService:
     ) -> list[ChatMessage]:
         """Retorna o histórico recente; rehidrata o cache quando necessário."""
         key = str(conversation_id)
-        cached = await self._short_term.get_history(key)
+        try:
+            cached = await self._short_term.get_history(key)
+        except RedisError as exc:
+            logger.warning(
+                "Falha ao ler cache de histórico; usando PostgreSQL "
+                "(redis_error=%s).",
+                type(exc).__name__,
+            )
+            cached = []
         if cached:
             return cached
 
@@ -93,5 +102,12 @@ class HistoryService:
             len(messages),
             conversation_id,
         )
-        await self._short_term.append_many(key, messages)
+        try:
+            await self._short_term.append_many(key, messages)
+        except RedisError as exc:
+            logger.warning(
+                "Histórico recuperado do PostgreSQL, mas o cache não pôde "
+                "ser reidratado (redis_error=%s).",
+                type(exc).__name__,
+            )
         return messages
