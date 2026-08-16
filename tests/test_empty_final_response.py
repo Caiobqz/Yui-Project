@@ -192,4 +192,3 @@ async def test_completely_empty_stream_retries_then_emits_and_persists_fallback(
             await session.execute(select(Message).where(Message.role == "assistant"))
         ).scalar_one()
     assert assistant.content == _EMPTY_RESPONSE_FALLBACK
-
