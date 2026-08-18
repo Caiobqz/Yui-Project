@@ -86,6 +86,32 @@ async def test_tool_call_without_text_is_allowed_before_valid_final(
     assert any(message.role == "tool" for message in llm.calls[-1][1])
 
 
+async def test_empty_retry_budget_is_global_across_tool_iterations(
+    session_factory,
+) -> None:
+    llm = FakeLLM(
+        script=[
+            LLMResponse(content="", model="fake"),
+            LLMResponse(
+                content="",
+                model="fake",
+                tool_calls=(
+                    ToolCall(id="call-1", name="list_tasks", arguments={}),
+                ),
+            ),
+            LLMResponse(content="\n", model="fake"),
+        ]
+    )
+    core = _build_core(session_factory, llm)
+    user_id = await _create_user(session_factory)
+
+    reply = await core.process_message(user_id, "free", "liste minhas tarefas")
+
+    assert reply.content == _EMPTY_RESPONSE_FALLBACK
+    assert len(llm.calls) == 3
+    assert any(message.role == "tool" for message in llm.calls[-1][1])
+
+
 async def test_repeated_empty_final_persists_fallback_and_sends_it_to_post_turn(
     session_factory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -168,6 +194,33 @@ async def test_stream_uses_valid_deltas_when_consolidated_content_is_empty(
             await session.execute(select(Message).where(Message.role == "assistant"))
         ).scalar_one()
     assert assistant.content == "resposta incremental"
+
+
+async def test_stream_emits_whitespace_deltas_before_retrying_empty_final(
+    session_factory,
+) -> None:
+    llm = _ScriptedStreamLLM(
+        [
+            (["  ", "\n"], LLMResponse(content="", model="fake")),
+            (["resposta válida"], LLMResponse(content="", model="fake")),
+        ]
+    )
+    core = _build_core(session_factory, llm)
+    user_id = await _create_user(session_factory)
+
+    events = [event async for event in core.stream_message(user_id, "free", "olá")]
+
+    assert [event["text"] for event in events if event["type"] == "delta"] == [
+        "  ",
+        "\n",
+        "resposta válida",
+    ]
+    assert llm.calls == 2
+    async with session_factory() as session:
+        assistant = (
+            await session.execute(select(Message).where(Message.role == "assistant"))
+        ).scalar_one()
+    assert assistant.content == "resposta válida"
 
 
 async def test_completely_empty_stream_retries_then_emits_and_persists_fallback(
