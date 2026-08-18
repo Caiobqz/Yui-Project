@@ -27,6 +27,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
 
+from redis.exceptions import RedisError
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -70,6 +71,19 @@ logger = logging.getLogger("yui.core")
 _FALLBACK_REPLY = (
     "Não consegui concluir a ação dentro do limite de etapas. Pode reformular?"
 )
+_EMPTY_RESPONSE_FALLBACK = (
+    "Desculpe, não consegui gerar uma resposta válida agora. Tente novamente."
+)
+_EMPTY_FINAL_RETRY_LIMIT = 1
+
+
+def _usable_final_text(response: LLMResponse, streamed_text: str = "") -> str | None:
+    """Seleciona texto final não vazio sem invalidar tool calls intermediárias."""
+    if response.content.strip():
+        return response.content
+    if streamed_text.strip():
+        return streamed_text
+    return None
 
 
 @dataclass(frozen=True)
@@ -152,18 +166,43 @@ class YuiCore:
         ctx = self._tool_context(user_id, setup.conversation_id)
         tools = self._registry.specs() or None
         final_text = _FALLBACK_REPLY
+        empty_retries_remaining = _EMPTY_FINAL_RETRY_LIMIT
+        turn_complete = False
         for _ in range(settings.llm_max_tool_iterations):
-            response = await self._llm.generate(
-                setup.system_prompt, messages, tools=tools
-            )
-            responses.append(response)
-            if not response.tool_calls:
-                final_text = self._guardian.guard_model_output(
-                    setup.security,
-                    response.content,
+            while True:
+                response = await self._llm.generate(
+                    setup.system_prompt, messages, tools=tools
                 )
+                responses.append(response)
+                if response.tool_calls:
+                    await self._handle_tool_calls(ctx, setup, messages, response)
+                    break
+
+                candidate = _usable_final_text(response)
+                if candidate is not None:
+                    final_text = self._guardian.guard_model_output(
+                        setup.security,
+                        candidate,
+                    )
+                    turn_complete = True
+                    break
+
+                if empty_retries_remaining > 0:
+                    empty_retries_remaining -= 1
+                    logger.warning(
+                        "LLM retornou resposta final vazia; repetindo geração uma vez."
+                    )
+                    continue
+
+                logger.error(
+                    "LLM retornou resposta final vazia após retry; usando fallback."
+                )
+                final_text = _EMPTY_RESPONSE_FALLBACK
+                turn_complete = True
                 break
-            await self._handle_tool_calls(ctx, setup, messages, response)
+
+            if turn_complete:
+                break
 
         await self._finalize_turn(user_id, setup, text, final_text, responses)
         if not self._guardian.should_skip_post_turn(setup.security):
@@ -216,42 +255,68 @@ class YuiCore:
         ctx = self._tool_context(user_id, setup.conversation_id)
         tools = self._registry.specs() or None
         final_text = _FALLBACK_REPLY
+        empty_retries_remaining = _EMPTY_FINAL_RETRY_LIMIT
+        turn_complete = False
         for _ in range(settings.llm_max_tool_iterations):
-            response: LLMResponse | None = None
-            buffered_text = ""
-            async for chunk in self._llm.generate_stream(
-                setup.system_prompt, messages, tools=tools
-            ):
-                if chunk.delta:
-                    buffered_text += chunk.delta
-                    if not suspicious:
-                        # Turno normal: emite incrementalmente, sem esperar
-                        # o resto da geração.
-                        yield {"type": "delta", "text": chunk.delta}
-                if chunk.response is not None:
-                    response = chunk.response
-            if response is None:
-                raise RuntimeError("Streaming terminou sem resposta consolidada.")
-            responses.append(response)
-            if not response.tool_calls:
-                final_text = self._guardian.guard_model_output(
-                    setup.security,
-                    response.content or buffered_text,
+            while True:
+                response: LLMResponse | None = None
+                buffered_text = ""
+                async for chunk in self._llm.generate_stream(
+                    setup.system_prompt, messages, tools=tools
+                ):
+                    if chunk.delta:
+                        buffered_text += chunk.delta
+                        if not suspicious:
+                            # Turno normal: emite incrementalmente, sem esperar
+                            # o resto da geração.
+                            yield {"type": "delta", "text": chunk.delta}
+                    if chunk.response is not None:
+                        response = chunk.response
+                if response is None:
+                    raise RuntimeError("Streaming terminou sem resposta consolidada.")
+                responses.append(response)
+                if response.tool_calls:
+                    yield {
+                        "type": "tool",
+                        "tools": [call.name for call in response.tool_calls],
+                    }
+                    await self._handle_tool_calls(ctx, setup, messages, response)
+                    break
+
+                candidate = _usable_final_text(response, buffered_text)
+                if candidate is not None:
+                    final_text = self._guardian.guard_model_output(
+                        setup.security,
+                        candidate,
+                    )
+                    if suspicious:
+                        # Só agora, com o texto consolidado E validado, algo
+                        # chega ao cliente pela primeira vez neste turno.
+                        yield {"type": "delta", "text": final_text}
+                    elif not buffered_text.strip():
+                        # Providers sem deltas ainda precisam entregar o texto
+                        # consolidado ao cliente normal.
+                        yield {"type": "delta", "text": final_text}
+                    turn_complete = True
+                    break
+
+                if empty_retries_remaining > 0:
+                    empty_retries_remaining -= 1
+                    logger.warning(
+                        "LLM retornou streaming final vazio; repetindo geração uma vez."
+                    )
+                    continue
+
+                logger.error(
+                    "LLM retornou streaming final vazio após retry; usando fallback."
                 )
-                if suspicious:
-                    # Só agora, com o texto consolidado E validado, algo
-                    # chega ao cliente pela primeira vez neste turno.
-                    yield {"type": "delta", "text": final_text}
-                # Turno normal: nada a emitir aqui — o texto já foi todo
-                # entregue incrementalmente acima (guard_model_output é
-                # no-op quando should_protect é False, então final_text já
-                # é exatamente o que os deltas somaram).
+                final_text = _EMPTY_RESPONSE_FALLBACK
+                yield {"type": "delta", "text": final_text}
+                turn_complete = True
                 break
-            yield {
-                "type": "tool",
-                "tools": [call.name for call in response.tool_calls],
-            }
-            await self._handle_tool_calls(ctx, setup, messages, response)
+
+            if turn_complete:
+                break
 
         await self._finalize_turn(user_id, setup, text, final_text, responses)
         if not self._guardian.should_skip_post_turn(setup.security):
@@ -526,13 +591,20 @@ class YuiCore:
             await session.commit()
 
         # Cache de curto prazo (par gravado atomicamente) e contador de tokens.
-        await self._short_term.append_many(
-            str(conversation_id),
-            [
-                ChatMessage(role="user", content=user_text),
-                ChatMessage(role="assistant", content=assistant_text),
-            ],
-        )
+        try:
+            await self._short_term.append_many(
+                str(conversation_id),
+                [
+                    ChatMessage(role="user", content=user_text),
+                    ChatMessage(role="assistant", content=assistant_text),
+                ],
+            )
+        except RedisError as exc:
+            logger.warning(
+                "Turno persistido no PostgreSQL, mas o cache de histórico não "
+                "pôde ser atualizado (redis_error=%s).",
+                type(exc).__name__,
+            )
         total_tokens = sum(
             (r.input_tokens or 0) + (r.output_tokens or 0) for r in responses
         )
